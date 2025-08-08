@@ -1,21 +1,20 @@
-"""
-This file contains code adapted from the Clay Foundation project:
-https://github.com/Clay-foundation/model
-Licensed under the Apache License 2.0.
+# This file contains code adapted from the Clay Foundation project:
+# https://github.com/Clay-foundation/model
+# Licensed under the Apache License 2.0.
+#
+# Included classes:
+# - `Encoder()`: Adapted from `claymodel/model.py`
+#   Source: https://github.com/Clay-foundation/model/blob/main/claymodel/model.py
+# - `SegmentEncoder()`: Adapted from `claymodel/finetune/segment/factory.py`
+#   Source: https://github.com/Clay-foundation/model/blob/main/claymodel/finetune/segment/factory.py
+#
+# Modifications:
+# - Combined both classes into a single file
+# - Adjusted import paths and minor formatting
+#
+# You may obtain a copy of the Apache License 2.0 at:
+# http://www.apache.org/licenses/LICENSE-2.0
 
-Included classes:
-- `Encoder()`: Adapted from `claymodel/model.py`
-  Source: https://github.com/Clay-foundation/model/blob/main/claymodel/model.py
-- `SegmentEncoder()`: Adapted from `claymodel/finetune/segment/factory.py`
-  Source: https://github.com/Clay-foundation/model/blob/main/claymodel/finetune/segment/factory.py
-
-Modifications:
-- Combined both classes into a single file
-- Adjusted import paths and minor formatting
-
-You may obtain a copy of the Apache License 2.0 at:
-http://www.apache.org/licenses/LICENSE-2.0
-"""
 
 import math, os, re
 import torch

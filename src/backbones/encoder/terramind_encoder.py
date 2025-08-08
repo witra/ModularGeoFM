@@ -1,16 +1,24 @@
 
-import torch
-from torch import nn
-from einops import rearrange, repeat
-from functools import partial
-import math
-from terratorch.models.backbones.terramind.model.terramind import TerraMind
-from terratorch.models.backbones.terramind.model.encoder_embeddings import ImageEncoderEmbedding
-from terratorch.models.backbones.terramind.model.terramind import Block, DecoderBlock, LayerNorm
+# This class is adapted from the original TerraMind model:
+# https://github.com/IBM/terratorch/blob/main/terratorch/models/backbones/terramind/model/terramind.py
+# last accessed 2025-08-08 on on commit 05bb5ed
+# Copyright (c) IBM Corporation
+# Licensed under the Apache License 2.0.
+#
+# Modifications:
+# - Simplified structure and implementation
+# - Removed some components for minimal use case
+# - Adjusted imports and reorganized code
+#
+# You may obtain a copy of the Apache License at:
+# http://www.apache.org/licenses/LICENSE-2.0
 
-"""
-ref: https://github.com/IBM/terratorch/blob/main/terratorch/models/backbones/terramind/model/terramind.py#L118
-"""
+import math
+import torch
+from functools import partial
+from einops import rearrange, repeat
+from terratorch.models.backbones.terramind.model.terramind import Block, LayerNorm
+from torch import nn
 
 class TerramindEncoder(nn.Module):
     def __init__(self,
@@ -22,7 +30,7 @@ class TerramindEncoder(nn.Module):
                  drop_path_rate_encoder=0,
                  qkv_bias=True,
                  mlp_bias=True,
-                 # shared_drop_path=False,
+                 shared_drop_path=False,
                  qk_norm: bool = False,
                  proj_bias=True,
                  gated_mlp: bool = False, # Make the feedforward gated for e.g. SwiGLU

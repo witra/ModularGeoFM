@@ -7,7 +7,7 @@ class SatMAEHeadViT(nn.Module):
     """
     Copied from IBM TerraTorch:
     https://github.com/IBM/terratorch/blob/main/terratorch/models/decoders/satmae_head.py
-    Commit: 4a4b70e (copied on 2025-08-07)
+    Commit: 4a4b70e (copied on 2025-08-08)
 
     License: Apache License 2.0
     Copyright (c) IBM Corp.
