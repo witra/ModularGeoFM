@@ -1,9 +1,6 @@
-import pystac_client
 import geopandas
 import pystac_client
 from odc.stac import stac_load
-from planetary_computer import sign
-
 
 def get_S2(zarr_store,
            kwargs_search,
@@ -14,7 +11,7 @@ def get_S2(zarr_store,
         df = geopandas.GeoDataFrame.from_features(items.to_dict(), crs="epsg:4326")
         print(f'number of detected scenes: {df.shape[0]}')
 
-        items = [sign(item) for item in items]
+        items = [item for item in items]
         xx = stac_load(items, groupby='id', **kwargs_load)
         print(f'num of time after join by stac_load() is {len(xx["time"])}')
 
