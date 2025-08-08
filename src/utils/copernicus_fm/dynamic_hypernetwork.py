@@ -1,5 +1,3 @@
-# Source: https://github.com/zhu-xlab/Copernicus-FM/blob/main/Copernicus-FM/src/dynamic_hypernetwork.py
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
