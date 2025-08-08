@@ -71,18 +71,12 @@ class CopernicusFMDataset(IterableDataset):
                     if self.verify_fn:
                         status = self.verify_fn(patch) # T/F
                     if status:
-                        # print(status)
-                        # print(f'{iteration} patch size {patch.size}, {patch.shape}')
-                        # print(f'num of zero {np.sum(patch == 0)}')
-                        # print(f'unique value {np.unique(patch)}')
                         batch_data.append(patch)
                         iteration = iteration + 1
                 except StopIteration:
                     print("Generator exhausted — stopping batch collection.")
                     if batch_data:  # yield remaining data if any
                         batch_data = np.stack(batch_data, axis=0)
-                        # print('batch_Data shape', batch_data.shape)
-                        # print('current worker is', worker_id)
                         yield torch.from_numpy(batch_data).squeeze()
                     return None
             batch_data = np.stack(batch_data, axis=0) # stack the selected patches into batch
