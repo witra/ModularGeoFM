@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from functools import partial
 from ..encoder.copernicusfm_encoder import vit_small_patch16, vit_base_patch16, vit_large_patch16, vit_huge_patch14
 from ..decoder.satmae_decoder import SatMAEHeadViT
 
