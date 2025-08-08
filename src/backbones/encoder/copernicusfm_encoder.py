@@ -1,5 +1,19 @@
-# source: https://github.com/zhu-xlab/Copernicus-FM/blob/main/Copernicus-FM/src/model_vit.py
-
+# This file was copied from:
+# https://github.com/zhu-xlab/Copernicus-FM/blob/main/Copernicus-FM/src/model_vit.py
+#
+# Original copyright:
+# © Meta Platforms, Inc. and affiliates – All rights reserved.
+#
+# This source code is licensed under the Apache License 2.0,
+# as found in the LICENSE file of the original repository.
+#
+# Copied on: 2025-08-07 at a02d794 commit
+# Modifications:
+# - Adjusted import paths to match this project's directory structure.
+#
+# References (as acknowledged in the original file):
+# - timm: https://github.com/rwightman/pytorch-image-models
+# - DeiT: https://github.com/facebookresearch/deit
 
 
 from functools import partial
