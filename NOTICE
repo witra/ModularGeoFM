@@ -1,0 +1,22 @@
+NOTICE
+
+This project includes code from the following third-party project(s):
+
+**TerraTorch by IBM**
+- Source: https://github.com/IBM/terratorch
+- License: Apache License 2.0
+- File used:
+    - `terratorch/models/decoders/satmae_head.py` (copied SatMAEHeadViT() class)
+    - `models/backbones/terramind/model/terramind.py` (adapted and simplified into a custom class)
+
+**Copernicus-FM**
+- Source: https://github.com/zhu-xlab/Copernicus-FM
+- License: Apache License 2.0
+- Files used: Copernicus-FM directoru
+- Note: The original Copernicus-FM code includes third-party components, as acknowledged in the NOTICE file of the original repository.
+
+**Clay-Foundation**
+- Source: https://github.com/Clay-foundation/model
+- License: Apache License 2.0
+- Files used:
+    - `model.py`, `finetune/segment/factory.py` (merged into one file with minor modifications)
