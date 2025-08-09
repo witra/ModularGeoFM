@@ -19,7 +19,7 @@ def get_S2(zarr_store,
                    mode="w",
                    consolidated=True,
                    zarr_format=2)
-        print('Done get_planetary_s2() !')
+        print('Done get_s2() !')
         return df
 
 if __name__ == "__main__":
