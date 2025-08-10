@@ -13,7 +13,7 @@ def get_S2(zarr_store,
 
         items = [item for item in items]
         xx = stac_load(items, groupby='id', **kwargs_load)
-        print(f'num of time after join by stac_load() is {len(xx["time"])}')
+        print(f'num of times loaded by stac_load() is {len(xx["time"])}')
 
         xx.to_zarr(zarr_store,
                    mode="w",
