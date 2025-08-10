@@ -3,7 +3,6 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from xbatcher import BatchGenerator
-import xarray as xr
 
 
 class CopernicusFMDataset(IterableDataset):
@@ -45,7 +44,6 @@ class CopernicusFMDataset(IterableDataset):
 
     def __iter__(self):
         worker_info = get_worker_info()
-        print(f'worker info: {worker_info}')
         if worker_info is None:
             subset = self.xr_dataset
         else:
@@ -61,7 +59,6 @@ class CopernicusFMDataset(IterableDataset):
             subset = self.xr_dataset.isel(time=slice(start, end))
 
         batch_gen = iter(self.create_batch_generator(subset))
-        iteration = 1
         while True:
             batch_data = []
             while len(batch_data) < self.batch_size_gen:
@@ -72,7 +69,6 @@ class CopernicusFMDataset(IterableDataset):
                         status = self.verify_fn(patch) # T/F
                     if status:
                         batch_data.append(patch)
-                        iteration = iteration + 1
                 except StopIteration:
                     print("Generator exhausted — stopping batch collection.")
                     if batch_data:  # yield remaining data if any
@@ -80,8 +76,6 @@ class CopernicusFMDataset(IterableDataset):
                         yield torch.from_numpy(batch_data).squeeze()
                     return None
             batch_data = np.stack(batch_data, axis=0) # stack the selected patches into batch
-            print('batch_Data shape', batch_data.shape)
-            print('current worker is', worker_id)
             yield torch.from_numpy(batch_data).squeeze()
 
 class CopernicusFMDataModule(L.LightningDataModule):
@@ -103,7 +97,10 @@ class CopernicusFMDataModule(L.LightningDataModule):
                                             input_overlap=self.input_overlap,
                                             verify_fn=self.verify_fn,
                                             batch_size_gen=self.batch_size_gen)
-        if num_workers > len(self.train_xr_dataset.coords['time']):
+
+        if num_workers == None:
+            self.num_workers = num_workers
+        elif num_workers > len(self.train_xr_dataset.coords['time']):
             self.num_workers = len(self.train_xr_dataset.coords['time'])
         else:
             self.num_workers = num_workers
@@ -118,24 +115,4 @@ class CopernicusFMDataModule(L.LightningDataModule):
         pass
     def predict_dataloader(self):
         pass
-
-if __name__ == "__main__":
-    store = "../../.dataset/my_s2_zarr_v2.zarr"
-    ds = xr.open_zarr(store)
-
-    ds['image'] = ds[["B02", "B03", "B04"]].to_array(dim='band')
-    ds['image'].coords['band'] = ["B02", "B03", "B04"]
-    ds['image'] = ds['image'].transpose('band', 'x', 'y', 'time')
-    datamodule = CopernicusFMDataModule(
-        train_xr_dataset=ds['image'],
-        input_dims={'band': 3, "x": 256, "y": 256, 'time': 1},
-        input_overlap={"x": 0, "y": 0},
-        batch_size_gen=10,
-        num_workers=4
-    )
-
-    for i, batch in enumerate(datamodule.train_dataloader()):
-        print('last print', i, batch.shape)
-        if i==3:
-            break
 
