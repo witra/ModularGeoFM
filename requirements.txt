@@ -15,4 +15,6 @@
     pystac-client
     xbatcher
     odc-stac
+    contextily
+    zarr
     git+https://github.com/IBM/terratorch.git#egg=terratorch
