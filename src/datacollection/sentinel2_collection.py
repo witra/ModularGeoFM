@@ -8,7 +8,7 @@ def get_S2(zarr_store,
         catalog = pystac_client.Client.open("https://stac.dataspace.copernicus.eu/v1/")
         search = catalog.search(collections=["sentinel-2-l2a"], **kwargs_search)
         items = search.item_collection()
-        df = geopandas.GeoDataFrame.from_features(items.to_dict(), crs="epsg:4326")
+        df = geopandas.GeoDataFrame.from_features(items.to_dict(), crs=kwargs_load['crs'])
         print(f'number of detected scenes: {df.shape[0]}')
 
         items = [item for item in items]
