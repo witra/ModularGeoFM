@@ -39,15 +39,8 @@ class CopernicusMLPModule(L.LightningModule):
 
     def predict_step(self, batch):
         coords = batch['y']
-
-        batch_on_device = dict(x=batch['x'].to(self.device),
-                               meta_info=batch['meta_info'].to(self.device),
-                               wave_list=batch['wave_list'].to(self.device),
-                               bandwidth=batch['bandwidth'].to(self.device),
-                               language_embed=batch['language_embed'].to(self.device) if batch['language_embed'] is not None else None,
-                               input_mode=batch['input_mode'],
-                               kernel_size=batch['kernel_size'].to(self.device) if batch['kernel_size'] is not None else None)
-        pred_logits = self.model(batch_on_device)
+        batch.pop('y')
+        pred_logits = self.model(batch)
         pred_logits = pred_logits.detach().cpu()
         if self.num_classes==1:
             prob = torch.sigmoid(pred_logits)
@@ -64,20 +57,13 @@ class CopernicusMLPModule(L.LightningModule):
 
     def shared_step(self, batch, mode):
         y_hat = torch.stack(batch["y"], dim=0).to(self.device)
+        batch.pop('y')
         if self.yhat_post_fn: # adjust y_hat size according to task type e.g., binary segmentation
             y_hat = self.yhat_post_fn(y_hat)
         mask_x = torch.isfinite(batch['x']).all(dim=1)
         mask_yhat = torch.isfinite(y_hat)
         mask = mask_x & mask_yhat
-
-        batch_on_device = dict(x=batch['x'].to(self.device),
-                               meta_info=batch['meta_info'].to(self.device),
-                               wave_list=batch['wave_list'].to(self.device),
-                               bandwidth=batch['bandwidth'].to(self.device),
-                               language_embed=batch['language_embed'].to(self.device) if batch['language_embed'] is not None else None,
-                               input_mode=batch['input_mode'],
-                               kernel_size=batch['kernel_size'].to(self.device) if batch['kernel_size'] is not None else None)
-        pred_logits = self.model(batch_on_device)
+        pred_logits = self.model(batch)
         loss = self.loss_fn(pred_logits, y_hat, mask=mask, eps=1e-6)
 
         # Log and check for NaNs
@@ -85,6 +71,7 @@ class CopernicusMLPModule(L.LightningModule):
             raise ValueError(f"NaN loss detected!, {loss}")
 
         self.log(name=f"{mode}_loss",
+                batch_size=len(batch['x']),
                 value=loss,
                 on_step=True,
                 on_epoch=True,
