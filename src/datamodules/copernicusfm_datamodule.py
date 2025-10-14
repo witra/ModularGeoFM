@@ -1,47 +1,24 @@
 import glob
 import math
-import os
+from functools import partial
+from pathlib import Path
+from typing import Literal
 
 import lightning as L
 import numpy as np
 import torch
-from kornia.augmentation import Normalize
-import copy
 import xarray as xr
 import yaml
-from functools import partial
-
-
+from box import Box
+from kornia.augmentation import Normalize
+from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from xbatcher import BatchGenerator
-from typing import Literal
-from sklearn.model_selection import train_test_split
-from pathlib import Path
-from box import Box
 
 
 class CopernicusFMDataset(IterableDataset):
     """
     Args:
-        samples: {
-            spectral_i: {
-                        pixels_path: zarr store,
-                        wavelist: wave_list,
-                        bandwidth: bandwidth,
-                        bandnames: bandnames,
-                        mean: mean,
-                        std: std,
-                        input_mode: spectral,
-                        kernel_size: kernel_size
-                        }
-            variable_i: {
-                        pixels_path: zarr store,
-                        meta_info: meta_info,
-                        language_embed: language_embed,
-                        input_mode: variable,
-                        kernel_size: kernel_size
-                        }
-        }
 
         yield:
             [x: x,
@@ -70,10 +47,15 @@ class CopernicusFMDataset(IterableDataset):
         self.input_overlap = input_overlap or {}
         self.augmentation = augmentation
         self.batch_size_gen = batch_size_gen
-        self.verify_fn = verify_fn
         self.time_dim = time_dim
         self.mode = mode
         self.filter_thres = filter_thres
+        if verify_fn == 'basic':
+            self.verify_fn = partial(self.basic_filter, threshold=self.filter_thres)
+        elif callable(verify_fn):
+            self.verify_fn = verify_fn
+        else:
+            raise ValueError(f"Invalid verify_fn: {verify_fn}")
 
 
     def create_batch_generator(self, subset):
@@ -88,6 +70,10 @@ class CopernicusFMDataset(IterableDataset):
             Returns True if the fraction of invalid values (zeros or NaNs) in `patch` is below threshold.
         """
         total_elements = patch.numel()  # total number of elements
+        # guard against empty patches
+        if total_elements == 0:
+            # treat an empty patch as invalid (reject)
+            return False
         num_zeros = (patch == 0).sum().item()
         num_nans = torch.isnan(patch).sum().item()
         invalid_fraction = (num_zeros + num_nans) / total_elements
@@ -109,10 +95,8 @@ class CopernicusFMDataset(IterableDataset):
                 num_times = len(xr_dataset[self.time_dim])
             else:
                 num_times = 1
-            for t in range(num_times):
-                sample_time_list.append((key, t))
+            sample_time_list.extend((key, t) for t in range(num_times))
         total_jobs = len(sample_time_list)
-
 
         # get num of avail workers
         worker_info = get_worker_info()
@@ -128,8 +112,8 @@ class CopernicusFMDataset(IterableDataset):
             sample_key, time = sample_time_list[global_index]
             modality = self.samples.get(sample_key)
             xr_dataset = xr.open_zarr(modality.get('pixels_path'))
-            wavelist = torch.tensor(modality.get('wavelist', None))
-            bandwidth = torch.tensor(modality.get('bandwidth', None))
+            wavelist = modality.get('wavelist', None)
+            bandwidth = modality.get('bandwidth', None)
             mean = modality.get('mean', None)
             std = modality.get('std', None)
             bandnames = modality.get('bandnames', None)
@@ -166,14 +150,12 @@ class CopernicusFMDataset(IterableDataset):
 
                     patch = patch_ds.to_array(dim='pixels').values.squeeze()
                     patch_tensor = torch.tensor(patch, dtype=torch.float32)
-
+                    
                     # verify per patch
                     status = False
-                    if self.verify_fn == 'basic':
-                        self.verify_fn = partial(self.basic_filter, threshold=self.filter_thres)
-                    if self.verify_fn and self.mode != 'predict':
+                    if self.mode != 'predict':
                         patch_test = patch_tensor[1:, :, :] # take only the actual data
-                        patch_test = self.normalise(patch_test)
+                        patch_test = self.normalise(patch_test).squeeze()
                         status = self.verify_fn(patch_test)  # T/F
                     if self.mode == 'predict':
                         status = True
@@ -197,7 +179,6 @@ class CopernicusFMDataset(IterableDataset):
                         batch_x.append(pixels_x)
                         meta_infos.append(meta_info)
 
-
                     if len(batch_x) == self.batch_size_gen:
                         # copy to submit to model
                         batch_y_submit = batch_y.copy()
@@ -209,17 +190,17 @@ class CopernicusFMDataset(IterableDataset):
 
                         batch_x_submit = torch.stack(batch_x_submit, dim=0)
                         meta_infos_submit = torch.tensor(np.stack(meta_infos_submit,
-                                                                  axis=0,
-                                                                  dtype=np.float32),
-                                                         dtype=torch.float32)
+                                                                    axis=0,
+                                                                    dtype=np.float32),
+                                                            dtype=torch.float32)
                         yield dict(x=batch_x_submit,
-                                   y=batch_y_submit,
-                                   meta_info=meta_infos_submit,
-                                   wave_list=wavelist,
-                                   bandwidth=bandwidth,
-                                   language_embed=language_embed,
-                                   input_mode=input_mode,
-                                   kernel_size=kernel_size)
+                                    y=batch_y_submit,
+                                    meta_info=meta_infos_submit,
+                                    wave_list=wavelist,
+                                    bandwidth=bandwidth,
+                                    language_embed=language_embed,
+                                    input_mode=input_mode,
+                                    kernel_size=kernel_size)
 
                 except Exception as e:
                     print(f'skipping problematic patch: {e}')
@@ -248,7 +229,7 @@ class CopernicusFMDataModule(L.LightningDataModule):
                  metadata_path: str,
                  input_dims: int,
                  input_overlap={'x': 0, 'y': 0},
-                 verify_fn=None,
+                 verify_fn='basic',
                  augmentation=None,
                  batch_size_gen=1,
                  num_workers=4,
@@ -268,6 +249,7 @@ class CopernicusFMDataModule(L.LightningDataModule):
         self.split_ratio = split_ratio
         self.filter_thres = filter_thres
         self.random_state = random_state
+        print('inside datamodule init')
 
 
 
@@ -305,21 +287,20 @@ class CopernicusFMDataModule(L.LightningDataModule):
         zarr_pathss = []
         path_kindss = []
         for zarr_dir, dir_kind in zip(self.zarr_dirs, self.data_kinds):
-            zarr_paths = glob.glob(zarr_dir + '/*.zarr')
+            zarr_paths = glob.glob(f"{zarr_dir}/*.zarr")
             path_kinds = [dir_kind for _ in zarr_paths]
             zarr_pathss.extend(zarr_paths)
             path_kindss.extend(path_kinds)
-
         if stage == "fit":
             train_path, val_path, train_kind, val_kind = train_test_split(zarr_pathss,
                                                                           path_kindss,
                                                                           stratify=path_kindss,
                                                                           test_size=(1 - self.split_ratio),
                                                                           shuffle=True,
-                                                                          random_state=self.random_state)
+                                                                          random_state=self.random_state
+                                                                          )
             train_samples = self.construct_samples(train_path, train_kind)
             val_samples = self.construct_samples(val_path, val_kind)
-
             self.train_ds = CopernicusFMDataset(train_samples,
                                                 input_dims=self.input_dims,
                                                 input_overlap=self.input_overlap,
@@ -362,6 +343,7 @@ class CopernicusFMDataModule(L.LightningDataModule):
                                                 )
 
     def train_dataloader(self):
+        print('DataLoader called')
         return DataLoader(
             dataset= self.train_ds,
             batch_size=None,
