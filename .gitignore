@@ -1,4 +1,11 @@
-./dataset/
-./exploration/
+dataset/
+exploration/
 .idea
-./weights/
+weights/
+*__pycache__/
+.DS_Store
+.vscode
+.ipynb_checkpoints
+wandb/
+Archive.zip
+.env
