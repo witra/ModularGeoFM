@@ -9,3 +9,5 @@ weights/
 wandb/
 Archive.zip
 .env
+.venv_testpackage/
+.venv
