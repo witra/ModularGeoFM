@@ -11,3 +11,4 @@ Archive.zip
 .env
 .venv_testpackage/
 .venv
+*.zip
