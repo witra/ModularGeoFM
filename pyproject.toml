@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "modulargeofm"
+version = "0.0.1"
+description = "Modular components, data pipelines, and experiments for applying foundation models to geospatial (EO) data."
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["geospatial", "earth observation", "foundation models", "machine learning", "deep learning"]
+license = {text = "MIT"}
+authors = [
+        {name = "Tahjudil Witra", email = "tahjudil.witra@gmail.com"},
+]
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = [
+        "torch>=2.0.0",
+        "torchvision",
+        "einops",
+        "geopandas",
+        "jsonargparse[signatures]>=4.27.7",
+        "lightning",
+        "matplotlib",
+        "python-box",
+        "scikit-image",
+        "scikit-learn",
+        "timm",
+        "vit-pytorch",
+        "wandb",
+        "rasterio",
+        "pystac-client",
+        "pytorch-optimizer",
+        "pynvml",
+        "kornia",
+        "torch-distmap",
+        "xbatcher",
+        "odc-stac",
+        "contextily",
+        "zarr",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "ruff",
+    "pre-commit",
+]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
+[tool]
