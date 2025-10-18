@@ -37,7 +37,7 @@ dependencies = [
         "rasterio",
         "pystac-client",
         "pytorch-optimizer",
-        "pynvml",
+        "nvidia-ml-py",
         "kornia",
         "torch-distmap",
         "xbatcher",
@@ -51,8 +51,9 @@ dev = [
     "black",
     "isort",
     "ruff",
-    "pre-commit",
-]
+    "pre-commit",   
+ ]
+
 test = [
     "pytest",
     "pytest-cov",
