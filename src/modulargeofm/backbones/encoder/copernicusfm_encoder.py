@@ -17,7 +17,7 @@
 
 
 from functools import partial
-from ...utils.copernicus_fm.dynamic_hypernetwork import (
+from modulargeofm.utils.copernicus_fm.dynamic_hypernetwork import (
     Dynamic_MLP_OFA_spectral, Dynamic_MLP_OFA_variable
 )
 
@@ -26,8 +26,8 @@ import torch.nn as nn
 
 from timm.models.vision_transformer import Block
 
-from ...utils.copernicus_fm.aurora.fourier import FourierExpansion
-from ...utils.copernicus_fm.flexivit.utils import resize_abs_pos_embed
+from modulargeofm.utils.copernicus_fm.aurora.fourier import FourierExpansion
+from modulargeofm.utils.copernicus_fm.flexivit.utils import resize_abs_pos_embed
 import math
 
 
