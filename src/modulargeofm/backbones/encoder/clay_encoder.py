@@ -19,7 +19,7 @@
 import math, os, re
 import torch
 from einops import rearrange, repeat
-from src.utils.clay import DynamicEmbedding, Transformer, posemb_sincos_2d_with_gsd
+from modulargeofm.utils.clay import DynamicEmbedding, Transformer, posemb_sincos_2d_with_gsd
 from torch import nn
 
 torch.set_float32_matmul_precision("medium")
