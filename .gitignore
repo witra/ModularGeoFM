@@ -12,3 +12,4 @@ Archive.zip
 .venv_testpackage/
 .venv
 *.zip
+.coverage
