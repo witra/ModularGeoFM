@@ -13,6 +13,9 @@
     wandb
     rasterio
     pystac-client
+    pytorch-optimizer
+    pynvml
+    torch-distmap
     xbatcher
     odc-stac
     contextily

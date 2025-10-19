@@ -1,0 +1,15 @@
+dataset/
+exploration/
+.idea
+weights/
+*__pycache__/
+.DS_Store
+.vscode
+.ipynb_checkpoints
+wandb/
+Archive.zip
+.env
+.venv_testpackage/
+.venv
+*.zip
+.coverage
