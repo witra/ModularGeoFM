@@ -57,6 +57,7 @@ dev = [
 test = [
     "pytest",
     "pytest-cov",
+    "diff-cover"
 ]
 
 [tool]
