@@ -73,9 +73,9 @@ jobs:
           path: diff-cover.html
 
       # 8. Fail workflow if Python diff coverage < threshold
-      - name: Fail if diff coverage below threshold
+      - name: check coverage threshold
         run: |
-          COVERAGE=${{ steps.diffcheck.outputs.coverage }}
+          COVERAGE=${{ steps.diffcheck.outputs.coverage}}
           echo "Diff coverage: $COVERAGE%"
           # Numeric comparison
           if (( $(echo "$COVERAGE < 85" | bc -l) )); then
