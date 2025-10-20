@@ -74,7 +74,7 @@ jobs:
 
       # 8. Fail workflow if Python diff coverage < threshold
       - name: Fail if diff coverage below threshold
-        if: steps.diffcheck.outputs.coverage != '' && steps.diffcheck.outputs.coverage < '85'
+        if: steps.diffcheck.outputs.coverage < '85'
         run: |
           echo "❌ Diff coverage is below threshold: ${{ steps.diffcheck.outputs.coverage }}%"
           exit 1
