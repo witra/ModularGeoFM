@@ -54,7 +54,7 @@ jobs:
           else
               # Extract diff coverage percentage
               DIFF_COVERAGE=$(diff-cover coverage.xml --compare-branch=origin/main --json-report diff.json | jq '.diff_covered_percent')
-              echo "Diff coverage: $DIFF_COVERAGE%"
+              echo "Diff coverage: $DIFF_COVERAGE%" # coverage on the diff/changes python code
               echo "coverage=$DIFF_COVERAGE" >> $GITHUB_OUTPUT
           fi
 
@@ -74,7 +74,13 @@ jobs:
 
       # 8. Fail workflow if Python diff coverage < threshold
       - name: Fail if diff coverage below threshold
-        if: steps.diffcheck.outputs.coverage < '85'
         run: |
-          echo "❌ Diff coverage is below threshold: ${{ steps.diffcheck.outputs.coverage }}%"
-          exit 1
+          COVERAGE=${{ steps.diffcheck.outputs.coverage }}
+          echo "Diff coverage: $COVERAGE%"
+          # Numeric comparison
+          if (( $(echo "$COVERAGE < 85" | bc -l) )); then
+            echo "❌ Diff coverage is below threshold"
+            exit 1
+          else
+            echo "✅ Diff coverage meets threshold"
+          fi
