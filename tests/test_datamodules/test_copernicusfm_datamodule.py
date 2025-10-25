@@ -198,16 +198,10 @@ def test_iter_yields_batches(mock_get_worker,
 
     # --- Act ---
     outputs = next(iter(ds))
-    
-    # print(f'result in {mode}:', outputs)
-    # print(f'type in {mode} x:', type(outputs['x']))
-    # print(f'type in {mode} y:', type(outputs['y']))
-    print(f'len in {mode} y:', len(outputs['y'][0]))
-    print(f'type in {mode} y:', type(outputs['y'][0]))
-    print(f'shape x first patch {mode}', outputs["x"][0].shape)
-    print(f'shape y first patch {mode}', outputs["y"][0].shape if mode !='predict' else len(outputs["y"][0]))
 
+    
     # --- Assertions and test on different mode ---
+    
     # test the returned outputs
     assert isinstance(outputs, dict) 
 
