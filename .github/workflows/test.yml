@@ -44,27 +44,26 @@ jobs:
         continue-on-error: true
         run: |
           # Run diff-cover and save output
-          diff-cover coverage.xml --compare-branch=origin/main --fail-under=85 > diff_output.txt || true
+          diff-cover coverage.xml --compare-branch=origin/main \
+            --format json:diff.json \
+            --format html:diff-cover.html \
+            --fail-under=85 > diff_output.txt || true
+          
+          # Display diff-cover output
           cat diff_output.txt
 
-          # Determine if there are Python changes
-          if grep -q "No lines with coverage information in this diff" diff_output.txt; then
-              echo "No Python changes in diff — treat as fully covered"
-              echo "coverage=100" >> $GITHUB_OUTPUT
+          # Extract coverage from JSON
+          if [ -s diff.json ]; then
+              DIFF_COVERAGE=$(jq -r '.diff_covered_percent // 100' diff.json)
           else
-              # Extract diff coverage percentage
-              DIFF_COVERAGE=$(diff-cover coverage.xml --compare-branch=origin/main --json-report diff.json | jq '.diff_covered_percent')
-              echo "Diff coverage: $DIFF_COVERAGE%" # coverage on the diff/changes python code
-              echo "coverage=$DIFF_COVERAGE" >> $GITHUB_OUTPUT
+              # No Python changes → default to 100%
+              DIFF_COVERAGE=100
           fi
 
-      # 6. Generate HTML diff coverage report
-      - name: Generate HTML diff coverage report
-        if: always()
-        run: |
-          diff-cover coverage.xml --compare-branch=origin/main --format html:diff-cover.html
+          echo "Diff coverage: $DIFF_COVERAGE%"
+          echo "coverage=$DIFF_COVERAGE" >> $GITHUB_OUTPUT
 
-      # 7. Upload HTML artifact
+      # 6. Upload HTML artifact
       - name: Upload HTML diff coverage report
         if: always()
         uses: actions/upload-artifact@v4
@@ -72,7 +71,7 @@ jobs:
           name: diff-coverage-report
           path: diff-cover.html
 
-      # 8. Fail workflow if Python diff coverage < threshold
+      # 7. Fail workflow if Python diff coverage < threshold
       - name: check coverage threshold
         run: |
           COVERAGE=${{ steps.diffcheck.outputs.coverage}}
