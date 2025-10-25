@@ -53,7 +53,7 @@ jobs:
               echo "coverage=100" >> $GITHUB_OUTPUT
           else
               # Extract diff coverage percentage
-              DIFF_COVERAGE=$(diff-cover coverage.xml --compare-branch=origin/main --json-report diff.json | jq '.diff_covered_percent')
+              DIFF_COVERAGE=$(diff-cover coverage.xml --compare-branch=origin/main --format json:diff.json > /dev/null && jq '.diff_covered_percent' diff.json)
               echo "Diff coverage: $DIFF_COVERAGE%" # coverage on the diff/changes python code
               echo "coverage=$DIFF_COVERAGE" >> $GITHUB_OUTPUT
           fi
