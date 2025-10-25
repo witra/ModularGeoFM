@@ -162,7 +162,7 @@ class CopernicusFMDataset(IterableDataset):
                     if status:
                         # perform augmentation and normalization
                         if self.augmentation and self.mode != 'predict':
-                            patch_tensor = self.augmentation(patch_tensor)
+                            patch_tensor = self.augmentation(patch_tensor) # Todo: test and check this 
                         if self.mode=='predict':
                             # setup the coordinate x, y, and spatial ref
                             coords_y = patch_ds.coords['y'].values
@@ -189,10 +189,7 @@ class CopernicusFMDataset(IterableDataset):
                         batch_y, batch_x, meta_infos = [], [], []
 
                         batch_x_submit = torch.stack(batch_x_submit, dim=0)
-                        meta_infos_submit = torch.tensor(np.stack(meta_infos_submit,
-                                                                    axis=0,
-                                                                    dtype=np.float32),
-                                                            dtype=torch.float32)
+                        meta_infos_submit = torch.stack([torch.stack(metas) for metas in meta_infos_submit])
                         yield dict(x=batch_x_submit,
                                     y=batch_y_submit,
                                     meta_info=meta_infos_submit,
@@ -209,7 +206,7 @@ class CopernicusFMDataset(IterableDataset):
             # Yield any remaining partial batch if the batchgen has been exhausted
             if len(batch_x)>0:
                 batch_x = torch.stack(batch_x, dim=0)
-                meta_infos = torch.tensor(np.stack(meta_infos, axis=0, dtype=np.float32), dtype=torch.float32)
+                meta_infos = torch.stack([torch.stack(metas) for metas in meta_infos])
                 yield dict(x=batch_x,
                            y=batch_y,
                            meta_info=meta_infos,
