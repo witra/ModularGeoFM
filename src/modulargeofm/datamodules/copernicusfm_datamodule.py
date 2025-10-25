@@ -162,7 +162,7 @@ class CopernicusFMDataset(IterableDataset):
                     if status:
                         # perform augmentation and normalization
                         if self.augmentation and self.mode != 'predict':
-                            patch_tensor = self.augmentation(patch_tensor) # Todo: test and check this 
+                            patch_tensor = self.augmentation(patch_tensor)
                         if self.mode=='predict':
                             # setup the coordinate x, y, and spatial ref
                             coords_y = patch_ds.coords['y'].values
