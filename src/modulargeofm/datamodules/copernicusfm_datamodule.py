@@ -14,21 +14,74 @@ from kornia.augmentation import Normalize
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from xbatcher import BatchGenerator
+from typing import Union, Callable
 
 
 class CopernicusFMDataset(IterableDataset):
     """
-    Args:
+    Iterable PyTorch dataset for handling Copernicus Foundation Model (FM) data stored in Zarr format.
+    This dataset dynamically reads and batches satellite data from multiple modalities, applying
+    optional normalization, filtering, and augmentations. It is designed for streaming large-scale
+    Copernicus data efficiently across multiple worker processes.
 
-        yield:
-            [x: x,
-            meta_info: [lons, lats, times, areas],
-            wave_list: wave_list,
-            bandwidth: bandwidth,
-            language_embed: language_embed,
-            input_mode: spectral,
-            kernel_size: kernel_size
+    Parameters
+    ----------
+    samples : dict
+        Dictionary describing each dataset sample. Keys are sample names, and values are dictionaries
+        containing paths and metadata such as:
+        - ``pixels_path`` (str): Path to the Zarr dataset.
+        - ``wavelist`` (list): List of wavelengths or channels.
+        - ``bandwidth`` (list): List of bandwidths per channel.
+        - ``mean`` (list): Channel means for normalization.
+        - ``std`` (list): Channel standard deviations for normalization.
+        - ``bandnames`` (list): Band identifiers in the dataset.
+        - ``language_embed`` (optional): Embedding vectors for semantic context.
+        - ``input_mode`` (str): Input mode (e.g., "spectral" or "variable").
+        - ``kernel_size`` (optional): Spatial kernel size for processing.
+    input_dims : dict
+        Spatial dimensions of input patches, e.g. ``{"x": 256, "y": 256}``.
+    input_overlap : dict
+        Overlap between adjacent patches, e.g. ``{"x": 16, "y": 16}``.
+    mode : {"train", "val", "test", "predict"}
+        Operational mode of the dataset.
+    augmentation : callable, optional
+        Augmentation function applied to input tensors (used in training/validation modes).
+    verify_fn : {"basic"} or callable, default='basic'
+        Function used to verify the quality of a patch. If 'basic', checks for invalid values.
+    batch_size_gen : int, default=1
+        Number of patches per generated batch.
+    time_dim : str, default='time'
+        Dimension name representing temporal axis in the dataset.
+    filter_thres : float, default=0.05
+        Maximum allowed fraction of invalid (NaN or zero) values before filtering out a patch.
 
+    Yields
+    ------
+    dict
+        A dictionary containing:
+        - ``x`` (torch.Tensor): Normalized input tensor batch.
+        - ``y`` (list): Target tensor or coordinates (depending on mode).
+        - ``meta_info`` (torch.Tensor): Metadata tensor containing `[lon, lat, time, area]`.
+        - ``wave_list`` (list): List of wavelength bands.
+        - ``bandwidth`` (list): List of corresponding bandwidths.
+        - ``language_embed`` (optional): Language embeddings, if available.
+        - ``input_mode`` (str): Type of input representation.
+        - ``kernel_size`` (torch.Tensor or None): Kernel size for processing.
+
+    Notes
+    -----
+    This class supports distributed iteration using PyTorch `DataLoader` with multiple workers.
+    Each worker receives a unique subset of the dataset's temporal slices to avoid overlap.
+
+    Examples
+    --------
+    >>> dataset = CopernicusFMDataset(
+    ...     samples=my_samples,
+    ...     input_dims={'x': 128, 'y': 128},
+    ...     input_overlap={'x': 8, 'y': 8},
+    ...     mode='train',
+    ...     augmentation=None
+    ... )
     """
     def __init__(self,
                  samples,
@@ -59,16 +112,41 @@ class CopernicusFMDataset(IterableDataset):
 
 
     def create_batch_generator(self, subset):
+        """
+        Create a batch generator from an xarray subset. 
+        
+        Parameters 
+        ---------- 
+        subset : xarray.Dataset 
+            The dataset subset representing a specific temporal slice. 
+        
+        Returns 
+        ------- 
+        xbatcher.BatchGenerator 
+            Iterator yielding patches of the dataset subset.
+        """
         return BatchGenerator(
             subset,
             input_dims=self.input_dims,
             input_overlap=self.input_overlap)
 
     def basic_filter(self, patch, threshold=0.05):
+        """ 
+        Basic filtering function for rejecting invalid patches. 
+        
+        Checks if the fraction of zeros or NaN values in the input tensor exceeds a defined threshold. 
+        
+        Parameters 
+        ---------- 
+            patch : torch.Tensor Input patch tensor. 
+            threshold : float, default=0.05 Maximum allowed fraction of invalid elements. 
+        
+        Returns 
+        ------- 
+        bool 
+            ``True`` if patch is valid, ``False`` otherwise. 
+        """
 
-        """
-            Returns True if the fraction of invalid values (zeros or NaNs) in `patch` is below threshold.
-        """
         total_elements = patch.numel()  # total number of elements
         # guard against empty patches
         if total_elements == 0:
@@ -80,8 +158,18 @@ class CopernicusFMDataset(IterableDataset):
         return invalid_fraction < threshold
 
     def __iter__(self):
+        """ 
+        Iterate over dataset patches and yield processed batches. 
+        
+        The method handles worker-specific partitioning, filtering, normalization, and batching of patches. 
+        Remaining partial batches are also yielded at the end. 
+        
+        Yields 
+        ------ 
+        dict 
+            Dictionary containing processed batch data and metadata. 
+        """
         # handling splitting logic for workers cleverly in the case of different num of samples and time dimension.
-
         # get num of dataset modalities
         keys = list(self.samples.keys())
 
@@ -218,21 +306,89 @@ class CopernicusFMDataset(IterableDataset):
 
 class CopernicusFMDataModule(L.LightningDataModule):
     """
+    PyTorch Lightning DataModule for managing Copernicus Foundation Model datasets.
+    Handles dataset construction, train/validation/test splits, and DataLoader creation.
+    Integrates metadata parsing from YAML and dynamic Zarr dataset discovery.
 
+    Parameters
+    ----------
+    zarr_dirs : list of str
+        Directories containing `.zarr` datasets.
+    data_kinds : list of str
+        Data type identifiers corresponding to each directory.
+    metadata_path : str
+        Path to YAML metadata describing available datasets and channels.
+    input_dims : dict
+        Spatial dimensions of input patches.
+    input_overlap : dict, default={'x': 0, 'y': 0}
+        Overlap size between adjacent patches.
+    verify_fn : {"basic"} or callable, default='basic'
+        Function for validating patch quality.
+    augmentation : callable or str, optional
+        Optional data augmentation function.
+    batch_size_gen : int, default=1
+        Number of patches per batch in generated data.
+    num_workers : int, default=4
+        Number of parallel workers for data loading.
+    split_ratio : float, default=0.8
+        Fraction of data used for training (remaining for validation).
+    filter_thres : float, default=0.05
+        Threshold for filtering invalid patches.
+    random_state : int, default=46
+        Random seed for deterministic splitting.
+
+    Attributes
+    ----------
+    train_ds : CopernicusFMDataset
+        Training dataset instance.
+    val_ds : CopernicusFMDataset
+        Validation dataset instance.
+    test_ds : CopernicusFMDataset
+        Testing dataset instance.
+    pred_ds : CopernicusFMDataset
+        Prediction dataset instance.
+
+    Methods
+    -------
+    construct_samples(zarr_paths, kinds)
+        Build sample dictionaries with metadata and paths.
+    setup(stage)
+        Initialize datasets depending on stage ("fit", "test", "predict").
+    train_dataloader()
+        Return DataLoader for training.
+    val_dataloader()
+        Return DataLoader for validation.
+    test_dataloader()
+        Return DataLoader for testing.
+    predict_dataloader()
+        Return DataLoader for prediction.
+
+    Examples
+    --------
+    >>> datamodule = CopernicusFMDataModule(
+    ...     zarr_dirs=["/data/zarr/train"],
+    ...     data_kinds=["spectral"],
+    ...     metadata_path="metadata.yaml",
+    ...     input_dims={"x": 128, "y": 128}
+    ... )
+    >>> datamodule.setup("fit")
+    >>> train_loader = datamodule.train_dataloader()
+    >>> for batch in train_loader:
+    ...     print(batch['x'].shape)
     """
     def __init__(self,
-                 zarr_dirs: [],
-                 data_kinds: [],
+                 zarr_dirs: list,
+                 data_kinds: list,
                  metadata_path: str,
-                 input_dims: int,
-                 input_overlap={'x': 0, 'y': 0},
-                 verify_fn='basic',
-                 augmentation=None,
-                 batch_size_gen=1,
-                 num_workers=4,
-                 split_ratio=0.8,
-                 filter_thres=0.05,
-                 random_state=46):
+                 input_dims: dict,
+                 input_overlap: dict={'x': 0, 'y': 0},
+                 verify_fn: Union[Callable, str]='basic',
+                 augmentation: Union[Callable, str]=None,
+                 batch_size_gen: int=1,
+                 num_workers: int=4,
+                 split_ratio: float=0.8,
+                 filter_thres: float=0.05,
+                 random_state: int=46):
         super().__init__()
         self.zarr_dirs = zarr_dirs
         self.data_kinds = data_kinds
@@ -246,13 +402,22 @@ class CopernicusFMDataModule(L.LightningDataModule):
         self.split_ratio = split_ratio
         self.filter_thres = filter_thres
         self.random_state = random_state
-        print('inside datamodule init')
-
-
 
     def construct_samples(self, zarr_paths, kinds):
-        """
-
+        """ 
+        Construct structured sample dictionaries for each dataset path. 
+        
+        Parameters 
+        ---------- 
+        zarr_paths : list of str 
+            Paths to Zarr datasets. 
+        kinds : list of str 
+            Corresponding dataset kinds. 
+            
+        Returns
+        ------- 
+        dict 
+            Dictionary mapping sample names to configuration dictionaries. 
         """
 
         samples = {}
@@ -280,7 +445,19 @@ class CopernicusFMDataModule(L.LightningDataModule):
         return samples
 
     def setup(self, stage: Literal["fit", "test", "predict"]| None = None) -> None:
-        """Called by Lightning with stage='fit' | 'test' | 'predict'"""
+        """ 
+        Prepare datasets for training, validation, testing, or prediction.
+         
+        Parameters 
+        ---------- 
+        stage : {"fit", "test", "predict"}, optional 
+            Stage for which to set up datasets. Default is None. 
+        
+        Notes 
+        -----
+        - During ``fit`` stage, datasets are split according to ``split_ratio``. 
+        - During ``test`` or ``predict`` stages, all datasets are loaded without splitting. 
+        """
         zarr_pathss = []
         path_kindss = []
         for zarr_dir, dir_kind in zip(self.zarr_dirs, self.data_kinds):
@@ -340,13 +517,14 @@ class CopernicusFMDataModule(L.LightningDataModule):
                                                 )
 
     def train_dataloader(self):
-        print('DataLoader called')
+        """Return PyTorch DataLoader for training data."""
         return DataLoader(
             dataset= self.train_ds,
             batch_size=None,
             num_workers=self.num_workers
         )
     def val_dataloader(self):
+        """Return PyTorch DataLoader for validation data."""
         return DataLoader(
             dataset= self.val_ds,
             batch_size=None,
@@ -354,6 +532,7 @@ class CopernicusFMDataModule(L.LightningDataModule):
         )
 
     def test_dataloader(self):
+        """Return PyTorch DataLoader for test data."""
         return DataLoader(
             dataset=self.test_ds,
             batch_size=None,
@@ -361,6 +540,7 @@ class CopernicusFMDataModule(L.LightningDataModule):
         )
 
     def predict_dataloader(self):
+        """Return PyTorch DataLoader for prediction data."""
         return DataLoader(
             dataset= self.pred_ds,
             batch_size=None,
