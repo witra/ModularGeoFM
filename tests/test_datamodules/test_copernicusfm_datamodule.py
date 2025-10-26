@@ -1,11 +1,11 @@
-from calendar import c
-import re
+from importlib import metadata
 import os
-from networkx import group_out_degree_centrality
 import pytest
 import torch
-from unittest.mock import MagicMock, patch
-from modulargeofm.datamodules.copernicusfm_datamodule import CopernicusFMDataset #, CopernicusFMDataModule 
+import yaml
+from unittest.mock import MagicMock, patch, mock_open
+from box import Box
+from modulargeofm.datamodules.copernicusfm_datamodule import CopernicusFMDataset, CopernicusFMDataModule 
 
 @pytest.fixture
 def dummy_samples():
@@ -226,3 +226,109 @@ def test_iter_yields_batches(mock_get_worker,
     assert len(outputs["y"][0]) == 3 if mode == 'predict' else True
     assert outputs["y"][0].size() == (ds.input_dims['y'], ds.input_dims['x']) if mode != 'predict' else True
      
+
+# ================================= test data module =================================
+
+# Sample metadata to mock yaml content
+META = {
+    "kind1": { "input_mode": "spectral", 
+               "wavelist": {"wl": 1},
+               "bandwidths": {"b": 1},
+                "bandnames": ["b"],
+                  "mean": {"b": 0}, 
+                  "std": {"b": 1}, 
+                  "kernel_size": 3},
+
+    "kind2": {"input_mode": "variable", 
+              "meta_info": {"info": 1}, 
+              "language_embed": [0],
+              "kernel_size": 5}
+}
+
+@pytest.fixture()
+def datamodule():
+    yaml_content = yaml.dump(META)
+    with patch("builtins.open", mock_open(read_data=yaml_content)):
+        dm =  CopernicusFMDataModule(
+            zarr_dirs=['./dummy_zarr_dir1/', './dummy_zarr_dir2/'],
+            data_kinds=['S2_xz', 'DEM_yz'],
+            metadata_path='./dummy_metadata.yaml',
+            input_dims={'x': 64, 'y': 64},
+            input_overlap={'x': 16, 'y': 16},
+            verify_fn='basic',
+            augmentation=None,
+            batch_size_gen=2,
+            num_workers=0,
+            filter_thres=0.01,
+        )
+    return dm
+         
+         
+@patch("builtins.open", new_callable=mock_open, read_data=yaml.dump(META))
+def test_copernicusfm_datamodule_init(mock_open_func):
+    """Test datamodule initialization."""
+    
+    metadata_path = './dummy_metadata.yaml'
+    dm =  CopernicusFMDataModule(
+        zarr_dirs=['./dummy_zarr_dir1/', './dummy_zarr_dir2/',],
+        data_kinds=['S2_xz', 'DEM_yz'],
+        metadata_path=metadata_path,
+        input_dims={'x': 64, 'y': 64},
+        input_overlap={'x': 16, 'y': 16},
+        verify_fn='basic',
+        augmentation=None,
+        batch_size_gen=2,
+        num_workers=0,
+        filter_thres=0.01,
+        )
+
+    # ---------- Assertions ---------
+    mock_open_func.assert_called_once_with(metadata_path)  
+    assert isinstance(dm.zarr_dirs, list) and all(isinstance(p, str) for p in dm.zarr_dirs)
+    assert isinstance(dm.data_kinds, list) and all(isinstance(k, str) for k in dm.data_kinds)
+    assert isinstance(dm.metadata, Box) and dm.metadata.kind1.kernel_size == 3
+    assert isinstance(dm.input_dims, dict) and dm.input_dims == {'x': 64, 'y': 64}
+    assert isinstance(dm.input_overlap, dict) and dm.input_overlap == {'x': 16, 'y': 16}
+    assert callable(dm.verify_fn) or dm.verify_fn == 'basic'
+    assert callable(dm.augmentation) or dm.augmentation is None
+    assert isinstance(dm.batch_size_gen, int) and dm.batch_size_gen == 2
+    assert isinstance(dm.num_workers, int) and dm.num_workers == 0
+    assert isinstance(dm.split_ratio, float) and dm.split_ratio == 0.8
+    assert isinstance(dm.filter_thres, float) and dm.filter_thres == 0.01
+
+def test_construct_samples(datamodule):
+    zarr_paths = ['dummy1.zaar', 'dummy3.zaar', 'dummyZ.zaar']
+    kinds = ['kind1', 'kind1', 'kind2']
+    samples = datamodule.construct_samples(zarr_paths, kinds)
+    print('samples', samples)
+
+    assert isinstance(samples, dict)
+    assert all(isinstance(samples[key], dict) for key in samples.keys())
+    assert list(samples['dummy1'].keys()) == ['pixels_path', 'wavelist', 'bandwidth', 'bandnames', 'mean', 'std', 'input_mode', 'kernel_size']
+    assert list(samples['dummyZ'].keys()) == ['pixels_path', 'meta_info', 'language_embed', 'input_mode', 'kernel_size']
+
+@patch("modulargeofm.datamodules.copernicusfm_datamodule.train_test_split")
+@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMDataModule.construct_samples")
+@patch("modulargeofm.datamodules.copernicusfm_datamodule.glob.glob")
+@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMDataset")
+@pytest.mark.parametrize("stage", ["fit", "test", "predict"])
+def test_setup_stages(mock_dataset, 
+                      mock_glob, 
+                      mock_construct_samples, 
+                      mock_traintest_split, 
+                      stage, 
+                      datamodule
+                      ):
+    mock_dataset.return_value =  "CopernicusFM_Dataset"
+    mock_glob.return_value = MagicMock()
+    mock_traintest_split.return_value = ('train_path', 'val_path', 'train_kind', 'val_kind')
+    mock_construct_samples.return_value = MagicMock()
+
+    datamodule.setup(stage=stage)
+
+    attrs = {"fit": ["train_ds", "val_ds"], "test": ["test_ds"], "predict": ["pred_ds"]}
+    assert all(hasattr(datamodule, attr) for attr in attrs[stage]) 
+    assert all(getattr(datamodule, attr) == "CopernicusFM_Dataset" for attr in attrs[stage])  
+
+
+
