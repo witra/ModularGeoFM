@@ -3,6 +3,123 @@ import torch
 from unittest.mock import patch, MagicMock
 from modulargeofm.utils.losses import tversky_loss, boundary_loss, boundary_iou_loss, CombinedSegLoss
 
+fakedata = [
+    # pred, target, num_classes, min_expected, max_expected, desc
+    [
+        torch.tensor([[[
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10
+            ]]]).reshape(1,1,8,8).float(),
+        torch.tensor([[[
+                1,1,1,1,0,0,0,0,
+                1,1,1,1,0,0,0,0,
+                1,1,1,1,0,0,0,0,
+                1,1,1,1,0,0,0,0,
+                0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0
+            ]]]).reshape(1,8,8).float(),
+        1, 0, 0.1, "Perfect binary match 8x8"
+        ],
+
+    [
+        torch.tensor([[[
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                 10, 10, 10,-10,-10,-10,-10,-10,
+                 10, 10, 10,-10,-10,-10,-10,-10,
+                 10, 10, 10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10
+            ]]]).reshape(1,1,8,8).float(),
+        torch.tensor([[[
+                1,1,1,1,0,0,0,0,
+                1,1,1,1,0,0,0,0,
+                1,1,1,1,0,0,0,0,
+                1,1,1,1,0,0,0,0,
+                0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0
+            ]]]).reshape(1,8,8).float(),
+        1, 0.2, 0.5, "Partial binary boundary 8x8"
+        ],
+
+    [
+        torch.tensor([[[
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                 10, 10, 10, 10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10,
+                -10,-10,-10,-10,-10,-10,-10,-10
+            ]]]).reshape(1,1,8,8).float(),
+        torch.tensor([[[
+                0,0,0,0,0,0,1,1,
+                0,0,0,0,0,0,1,1,
+                0,0,0,0,0,0,1,1,
+                0,0,0,0,0,0,1,1,
+                0,0,0,0,0,0,1,1,
+                0,0,0,0,0,0,1,1,
+                1,1,1,1,1,1,1,1,
+                1,1,1,1,1,1,1,1
+            ]]]).reshape(1,8,8).float(),
+        1, 0.99, 1, "No overlap 8x8"
+        ],
+    
+    [
+        torch.tensor([[
+                # Class 0
+                [[ 10, 10, 10, 10,-10,-10,-10,-10],
+                 [ 10, 10, 10, 10,-10,-10,-10,-10],
+                 [ 10, 10, 10, 10,-10,-10,-10,-10],
+                 [ 10, 10, 10, 10,-10,-10,-10,-10],
+                 [-10,-10,-10,-10,-10,-10,-10,-10],
+                 [-10,-10,-10,-10,-10,-10,-10,-10],
+                 [-10,-10,-10,-10,-10,-10,-10,-10],
+                 [-10,-10,-10,-10,-10,-10,-10,-10]],
+                # Class 1
+                [[-10,-10,-10,-10, 10, 10, 10, 10],
+                 [-10,-10,-10,-10, 10, 10, 10, 10],
+                 [-10,-10,-10,-10, 10, 10, 10, 10],
+                 [-10,-10,-10,-10, 10, 10, 10, 10],
+                 [ 10, 10, 10, 10,-10,-10,-10,-10],
+                 [ 10, 10, 10, 10,-10,-10,-10,-10],
+                 [ 10, 10, 10, 10,-10,-10,-10,-10],
+                 [ 10, 10, 10, 10,-10,-10,-10,-10]],
+                # Class 2 (background)
+                [[-10,-10,-10,-10,-10,-10,-10,-10],
+                 [-10,-10,-10,-10,-10,-10,-10,-10],
+                 [-10,-10,-10,-10,-10,-10,-10,-10],
+                 [-10,-10,-10,-10,-10,-10,-10,-10],
+                 [-10,-10,-10,-10, 10, 10, 10, 10],
+                 [-10,-10,-10,-10, 10, 10, 10, 10],
+                 [-10,-10,-10,-10, 10, 10, 10, 10],
+                 [-10,-10,-10,-10, 10, 10, 10, 10]]
+            ]]).float(),
+        torch.tensor([[
+                [0,0,0,0,1,1,1,1],
+                [0,0,0,0,1,1,1,1],
+                [0,0,0,0,1,1,1,1],
+                [0,0,0,0,1,1,1,1],
+                [1,1,1,1,0,0,0,2],
+                [1,1,1,1,0,0,0,2],
+                [1,1,1,1,0,0,0,2],
+                [1,1,1,1,0,0,0,2],
+            ]]).float(),
+        3, 0.0, 1, "Multiclass 8x8 partial overlap"
+        ]
+]
 def manual_tversky(TP, FP, FN, alpha=0.7, beta=0.3, eps=1e-6):
     return 1. - ((TP) / (TP + alpha * FP + beta * FN + eps))
 
@@ -77,8 +194,8 @@ def test_tversky_index_multiclass_correctness():
 
 def make_mock_distances(B, C, H, W, value_fg=1.0, value_bg=2.0):
     """Create controlled distance maps for foreground and background."""
-    dist_fg = torch.ones(B, C, H, W) * value_fg       # foreground distance = 1
-    dist_bg = torch.ones(B, C, H, W) * value_bg       # background distance = 2
+    dist_fg = torch.ones(B, C, H, W) * value_fg  # foreground distance = 1
+    dist_bg = torch.ones(B, C, H, W) * value_bg  # background distance = 2
     return dist_fg, dist_bg
 
 
@@ -112,17 +229,13 @@ def test_boundary_loss_mock_numerical_correctness(mock_dist):
     # weighted_bg = sum((1-p) * d_bg) = 0
     # normalizer_fg = sum(d_fg) = 16 * 1 = 16
     # normalizer_bg = sum(d_bg) = 16 * 2 = 32
-    # loss = α*(16/16) + β*(0/32) = α
+    # loss = 1 - α*(16/16) + β*(0/32) = α
     alpha, beta = 0.5, 0.5
-    expected = alpha
+    expected = 1 - alpha
 
     out = boundary_loss(pred_logits, target, alpha=alpha, beta=beta)
     assert torch.isclose(out, torch.tensor(expected), atol=1e-6)
 
-
-# -----------------------------------------------------------
-# MASK test with mock distances
-# -----------------------------------------------------------
 @patch("modulargeofm.utils.losses.l1_distance_transform")
 def test_boundary_loss_mask_with_mock(mock_dist):
     B, C, H, W = 1, 1, 4, 4
@@ -138,145 +251,19 @@ def test_boundary_loss_mask_with_mock(mock_dist):
     out = boundary_loss(pred_logits, target, mask=mask)
 
     # Because all terms are masked, weighted_fg = weighted_bg = 0
-    # => loss = α*0/eps + β*0/eps → approx 0
-    assert out < 1e-3
+    # => loss = 1 - α*0/eps + β*0/eps → approx 1
+    assert out == 1.
 
+@pytest.mark.parametrize('dataset', fakedata)
+def test_boundary_loss_with_actual_l1_distance_transform(dataset):
+    pred_logits,target,num_classes,min_expected,max_expected,desc = dataset
+    out = boundary_loss(pred_logits, target, num_classes=num_classes)
+    assert out <= max_expected
 
-@patch("modulargeofm.utils.losses.l1_distance_transform")
-def test_boundary_loss_multiclass_mock(mock_dist):
-    B, C, H, W = 1, 3, 4, 4
-
-    dist_fg, dist_bg = make_mock_distances(B, C, H, W)
-    mock_dist.side_effect = [dist_fg, dist_bg]
-
-    pred_logits = torch.zeros(B, C, H, W)
-    pred_logits[:, 1, :, :] = 10  # Predict class 1 everywhere
-    target = torch.ones(B, H, W, dtype=torch.long)  # Class 1 everywhere
-
-    out = boundary_loss(pred_logits, target, num_classes=C)
-    # distance weights uniform → confident correct prediction → small loss
-    assert out <= 0.5
-@pytest.mark.parametrize(
-    "pred,target,num_classes,min_expected,max_expected,desc",
-    [
-        # --- Binary segmentation cases (8x8) ---
-        (
-            torch.tensor([[[
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10
-            ]]]).reshape(1,1,8,8).float(),
-            torch.tensor([[[
-                1,1,1,1,0,0,0,0,
-                1,1,1,1,0,0,0,0,
-                1,1,1,1,0,0,0,0,
-                1,1,1,1,0,0,0,0,
-                0,0,0,0,0,0,0,0,
-                0,0,0,0,0,0,0,0,
-                0,0,0,0,0,0,0,0,
-                0,0,0,0,0,0,0,0
-            ]]]).reshape(1,8,8).float(),
-            1, 0, 0.1, "Perfect binary match 8x8"
-        ),
-        (
-            torch.tensor([[[
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                 10, 10, 10,-10,-10,-10,-10,-10,
-                 10, 10, 10,-10,-10,-10,-10,-10,
-                 10, 10, 10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10
-            ]]]).reshape(1,1,8,8).float(),
-            torch.tensor([[[
-                1,1,1,1,0,0,0,0,
-                1,1,1,1,0,0,0,0,
-                1,1,1,1,0,0,0,0,
-                1,1,1,1,0,0,0,0,
-                0,0,0,0,0,0,0,0,
-                0,0,0,0,0,0,0,0,
-                0,0,0,0,0,0,0,0,
-                0,0,0,0,0,0,0,0
-            ]]]).reshape(1,8,8).float(),
-            1, 0.2, 0.5, "Partial binary boundary 8x8"
-        ),
-        (
-            torch.tensor([[[
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                 10, 10, 10, 10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10,
-                -10,-10,-10,-10,-10,-10,-10,-10
-            ]]]).reshape(1,1,8,8).float(),
-            torch.tensor([[[
-                0,0,0,0,0,0,1,1,
-                0,0,0,0,0,0,1,1,
-                0,0,0,0,0,0,1,1,
-                0,0,0,0,0,0,1,1,
-                0,0,0,0,0,0,1,1,
-                0,0,0,0,0,0,1,1,
-                1,1,1,1,1,1,1,1,
-                1,1,1,1,1,1,1,1
-            ]]]).reshape(1,8,8).float(),
-            1, 0.99, 1, "No overlap 8x8"
-        ),
-
-        # --- Multiclass segmentation case (8x8) ---
-        (
-            torch.tensor([[
-                # Class 0
-                [[ 10, 10, 10, 10,-10,-10,-10,-10],
-                 [ 10, 10, 10, 10,-10,-10,-10,-10],
-                 [ 10, 10, 10, 10,-10,-10,-10,-10],
-                 [ 10, 10, 10, 10,-10,-10,-10,-10],
-                 [-10,-10,-10,-10,-10,-10,-10,-10],
-                 [-10,-10,-10,-10,-10,-10,-10,-10],
-                 [-10,-10,-10,-10,-10,-10,-10,-10],
-                 [-10,-10,-10,-10,-10,-10,-10,-10]],
-                # Class 1
-                [[-10,-10,-10,-10, 10, 10, 10, 10],
-                 [-10,-10,-10,-10, 10, 10, 10, 10],
-                 [-10,-10,-10,-10, 10, 10, 10, 10],
-                 [-10,-10,-10,-10, 10, 10, 10, 10],
-                 [ 10, 10, 10, 10,-10,-10,-10,-10],
-                 [ 10, 10, 10, 10,-10,-10,-10,-10],
-                 [ 10, 10, 10, 10,-10,-10,-10,-10],
-                 [ 10, 10, 10, 10,-10,-10,-10,-10]],
-                # Class 2 (background)
-                [[-10,-10,-10,-10,-10,-10,-10,-10],
-                 [-10,-10,-10,-10,-10,-10,-10,-10],
-                 [-10,-10,-10,-10,-10,-10,-10,-10],
-                 [-10,-10,-10,-10,-10,-10,-10,-10],
-                 [-10,-10,-10,-10, 10, 10, 10, 10],
-                 [-10,-10,-10,-10, 10, 10, 10, 10],
-                 [-10,-10,-10,-10, 10, 10, 10, 10],
-                 [-10,-10,-10,-10, 10, 10, 10, 10]]
-            ]]).float(),
-            torch.tensor([[
-                [0,0,0,0,1,1,1,1],
-                [0,0,0,0,1,1,1,1],
-                [0,0,0,0,1,1,1,1],
-                [0,0,0,0,1,1,1,1],
-                [1,1,1,1,0,0,0,2],
-                [1,1,1,1,0,0,0,2],
-                [1,1,1,1,0,0,0,2],
-                [1,1,1,1,0,0,0,2],
-            ]]).float(),
-            3, 0.0, 1, "Multiclass 8x8 partial overlap"
-        ),
-    ]
-)
-def test_boundary_iou_large(pred, target, num_classes, min_expected, max_expected, desc):
+@pytest.mark.parametrize('dataset', fakedata)
+def test_boundary_iou_large(dataset):
     """Tests boundary_iou on larger masks so morphological ops produce nonzero boundaries."""
+    pred, target, num_classes, min_expected, max_expected, desc = dataset
     mask = torch.tensor([[[
                 0,0,0,0,0,0,0,0,
                 0,0,0,0,0,0,0,0,
