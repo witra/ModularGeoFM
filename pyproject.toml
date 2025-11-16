@@ -35,6 +35,7 @@ dependencies = [
         "vit-pytorch",
         "wandb",
         "rasterio",
+        "rioxarray",
         "pystac-client",
         "pytorch-optimizer",
         "nvidia-ml-py",

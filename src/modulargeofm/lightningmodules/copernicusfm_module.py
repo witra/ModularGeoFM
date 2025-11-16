@@ -1,8 +1,9 @@
 import lightning as L
 import torch
 
-from ..backbones.models.copernicusfm_models import CopernicusMLP
-from ..utils.losses import CombinedSegLoss
+from modulargeofm.backbones.models.copernicusfm_models import CopernicusMLP
+from modulargeofm.utils.losses import CombinedSegLoss
+from modulargeofm.utils.metrics import SegmentationMetrics
 
 class CopernicusMLPModule(L.LightningModule):
     def __init__(self,
@@ -23,6 +24,8 @@ class CopernicusMLPModule(L.LightningModule):
                                        ce_weight=0.4,
                                        tversky_weight=0.3,
                                        boundary_weight=0.3)
+        self.val_metrics_fn = SegmentationMetrics(num_classes=num_classes, tversky_alpha=0.7, tversky_beta=0.3)
+        self.test_metrics_fn = SegmentationMetrics(num_classes=num_classes, tversky_alpha=0.7, tversky_beta=0.3)
         self.yhat_post_fn = yhat_post_fn
 
     def forward(self, data_dict):
@@ -60,8 +63,8 @@ class CopernicusMLPModule(L.LightningModule):
         batch.pop('y')
         if self.yhat_post_fn: # adjust y_hat size according to task type e.g., binary segmentation
             y_hat = self.yhat_post_fn(y_hat)
-        mask_x = torch.isfinite(batch['x']).all(dim=1)
-        mask_yhat = torch.isfinite(y_hat)
+        mask_x = torch.isfinite(batch['x']).all(dim=1).unsqueeze(1) # (B, 1, H, W)
+        mask_yhat = torch.isfinite(y_hat) # (B, 1, H, W), not one-hot code yet
         mask = mask_x & mask_yhat
         pred_logits = self.model(batch)
         loss = self.loss_fn(pred_logits, y_hat, mask=mask, eps=1e-6)
@@ -69,6 +72,12 @@ class CopernicusMLPModule(L.LightningModule):
         # Log and check for NaNs
         if torch.isnan(loss):
             raise ValueError(f"NaN loss detected!, {loss}")
+
+        if mode == 'val':
+            self.val_metrics_fn.update(pred_logits, y_hat, mask=mask)
+        
+        if mode == 'test':
+            self.test_metrics_fn.update(pred_logits, y_hat, mask=mask)
 
         self.log(name=f"{mode}_loss",
                 batch_size=len(batch['x']),
@@ -79,10 +88,21 @@ class CopernicusMLPModule(L.LightningModule):
                 logger=True,
                 sync_dist=True)
         return loss
+    
+    def on_validation_epoch_end(self):
+        metrics = self.val_metrics_fn.compute()
+        self.log("val_tversky", metrics["tversky_index"], prog_bar=True)
+        self.log("val_dice", metrics["dice_coefficient"], prog_bar=True)
+        self.log("val_biou", metrics["boundary_iou"], prog_bar=True)
+        self.val_metrics_fn.reset()  
+    
+    def on_test_epoch_end(self):
+        metrics = self.val_metrics_fn.compute()
+        self.log("test_tversky", metrics["tversky_index"])
+        self.log("test_dice", metrics["dice_coefficient"])
+        self.log("test_biou", metrics["boundary_iou"])
+        self.val_metrics_fn.reset()
 
 
-    def transfer_batch_to_device(self, batch, device, dataloader_idx):
-        # skip automatic transfer
-        return batch
-
+    
 

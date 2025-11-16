@@ -108,7 +108,7 @@ class CopernicusMLP(nn.Module):
             self.patch_size = 16
             self.embed_dim = 1024
         elif encoder_name == 'vit_huge_patch14':
-            self.patch_size = 16
+            self.patch_size = 14
             self.embed_dim = 1280
         else:
             raise ValueError(f"Encoder {encoder_name} is not handled yet")
