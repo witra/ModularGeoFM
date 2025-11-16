@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import xarray as xr
 import yaml
+import rioxarray 
 from box import Box
 from kornia.augmentation import Normalize
 from sklearn.model_selection import train_test_split
@@ -152,9 +153,8 @@ class CopernicusFMDataset(IterableDataset):
         if total_elements == 0:
             # treat an empty patch as invalid (reject)
             return False
-        num_zeros = (patch == 0).sum().item()
-        num_nans = torch.isnan(patch).sum().item()
-        invalid_fraction = (num_zeros + num_nans) / total_elements
+        invalid_mask = (patch == 0) | torch.isnan(patch)
+        invalid_fraction = invalid_mask.sum().float() / total_elements
         return invalid_fraction < threshold
 
     def __iter__(self):
@@ -170,6 +170,9 @@ class CopernicusFMDataset(IterableDataset):
             Dictionary containing processed batch data and metadata. 
         """
         # handling splitting logic for workers cleverly in the case of different num of samples and time dimension.
+        
+        device = torch.device("cpu") # "cuda" if torch.cuda.is_available() else
+        
         # get num of dataset modalities
         keys = list(self.samples.keys())
 
@@ -178,12 +181,12 @@ class CopernicusFMDataset(IterableDataset):
 
         for key in keys:
             modality = self.samples.get(key)
-            xr_dataset = xr.open_zarr(modality.get('pixels_path'))
+            xr_dataset = xr.open_zarr(modality.get('pixels_path'), chunks=None)
             if self.time_dim in xr_dataset.dims:
                 num_times = len(xr_dataset[self.time_dim])
             else:
                 num_times = 1
-            sample_time_list.extend((key, t) for t in range(num_times))
+            sample_time_list.extend((key, xr_dataset, t) for t in range(num_times))
         total_jobs = len(sample_time_list)
 
         # get num of avail workers
@@ -194,60 +197,62 @@ class CopernicusFMDataset(IterableDataset):
             job_per_worker = int(math.ceil(total_jobs/worker_info.num_workers))
             start = worker_info.id * job_per_worker
             end = min(start + job_per_worker, total_jobs)
-
-
+        
         for global_index in range(start, end):
-            sample_key, time = sample_time_list[global_index]
+            sample_key, xr_dataset, time = sample_time_list[global_index]
             modality = self.samples.get(sample_key)
-            xr_dataset = xr.open_zarr(modality.get('pixels_path'))
             wavelist = modality.get('wavelist', None)
             bandwidth = modality.get('bandwidth', None)
-            mean = modality.get('mean', None)
-            std = modality.get('std', None)
+            mean = torch.tensor(modality.get('mean'), dtype=torch.float32, device=device)#.view(1, -1, 1, 1)
+            std = torch.tensor(modality.get('std'), dtype=torch.float32, device=device)#.view(1, -1, 1, 1)
             bandnames = modality.get('bandnames', None)
             language_embed = modality.get('language_embed', None)
             input_mode = modality.get('input_mode')
             kernel_size = torch.tensor(modality['kernel_size']) if modality.get('kernel_size') is not None else None
-            self.normalise = Normalize(mean=torch.tensor(mean), std=torch.tensor(std))
+            self.normalise = Normalize(mean=mean, std=std)
 
             if self.mode == 'predict':
                 bandnames = bandnames[1:]
             if self.time_dim in xr_dataset.dims:
                 subset = xr_dataset[bandnames].isel({self.time_dim: time})
             else:
-                if time > 0: raise Exception('num of times must be 0')
-                subset = xr_dataset.expand_dims(dim={self.time_dim:1}, axis=-1)
-                subset = subset[bandnames]
+                if time > 0: 
+                    raise Exception('num of times must be 0')
+                subset = xr_dataset.expand_dims(dim={self.time_dim:1}, axis=-1)[bandnames]
 
             resolution = abs(subset.rio.resolution()[0]) # in meters
             area = self.input_dims['x'] * self.input_dims['y'] * resolution/(1000**2) # in km2
-            area = torch.tensor(area)
+            area = torch.tensor(area)  
 
             # batch generator
             batch_gen = iter(self.create_batch_generator(subset))
 
-            # Collect and yield batches
-            batch_x, batch_y, meta_infos = [], [], []
+            # # Collect and yield batches
+            batch_y, meta_infos = [], []
+
+            batch_x = torch.empty((self.batch_size_gen, 
+                                   len(wavelist),
+                                   self.input_dims['x'], 
+                                   self.input_dims['y']),
+                                   dtype=torch.float32, device=device)
 
             for patch_ds in batch_gen:
                 try:
-                    x_c = torch.tensor(patch_ds['x'].values.mean()).squeeze()
-                    y_c = torch.tensor(patch_ds['y'].values.mean()).squeeze()
-                    time = torch.tensor(np.nan).squeeze()
-                    meta_info = x_c, y_c, time, area,
-
-                    patch = patch_ds.to_array(dim='pixels').values.squeeze()
-                    patch_tensor = torch.tensor(patch, dtype=torch.float32)
+                    patch_np = patch_ds.to_array(dim='pixels').values.squeeze()
+                    patch_tensor = torch.from_numpy(patch_np).float().to(device)
                     
                     # verify per patch
                     status = False
                     if self.mode != 'predict':
                         patch_test = patch_tensor[1:, :, :] # take only the actual data
-                        patch_test = self.normalise(patch_test).squeeze()
-                        status = self.verify_fn(patch_test)  # T/F
+                        status = self.verify_fn(patch_test) # T/F
                     if self.mode == 'predict':
                         status = True
                     if status:
+                        x_c = torch.tensor(patch_ds['x'].values.mean(), dtype=torch.float32)
+                        y_c = torch.tensor(patch_ds['y'].values.mean(), dtype=torch.float32)
+                        time = torch.tensor(np.nan)
+                        meta_info = x_c, y_c, time, area,
                         # perform augmentation and normalization
                         if self.augmentation and self.mode != 'predict':
                             patch_tensor = self.augmentation(patch_tensor)
@@ -261,48 +266,44 @@ class CopernicusFMDataset(IterableDataset):
                         else:
                             y = patch_tensor[0,  :, :]
                             pixels_x = patch_tensor[1:, :, :]
-                        pixels_x = self.normalise(pixels_x).clamp(min=-1.0, max=1.0).squeeze()
-                        pixels_x = torch.nan_to_num(pixels_x, nan=-1.0)
+                        batch_x[len(batch_y)] = pixels_x  # <--- write directly into preallocated batch tensor
                         batch_y.append(y)
-                        batch_x.append(pixels_x)
                         meta_infos.append(meta_info)
-
-                    if len(batch_x) == self.batch_size_gen:
-                        # copy to submit to model
-                        batch_y_submit = batch_y.copy()
-                        batch_x_submit = batch_x.copy()
-                        meta_infos_submit = meta_infos.copy()
-
-                        # reset for the next batch
-                        batch_y, batch_x, meta_infos = [], [], []
-
-                        batch_x_submit = torch.stack(batch_x_submit, dim=0)
-                        meta_infos_submit = torch.stack([torch.stack(metas) for metas in meta_infos_submit])
-                        yield dict(x=batch_x_submit,
-                                    y=batch_y_submit,
-                                    meta_info=meta_infos_submit,
+                    if len(batch_y) == self.batch_size_gen:
+                        batch_x = self.normalise(batch_x).clamp(min=-1.0, max=1.0)#.squeeze()
+                        batch_x = torch.nan_to_num(batch_x, nan=-1.0)
+                        yield dict( x=batch_x.clone(),
+                                    y=batch_y.copy(),
+                                    meta_info=torch.stack([torch.stack(metas) for metas in meta_infos]),
                                     wave_list=wavelist,
                                     bandwidth=bandwidth,
                                     language_embed=language_embed,
                                     input_mode=input_mode,
                                     kernel_size=kernel_size)
+                        batch_y, meta_infos = [], []
+                        batch_x = torch.empty((self.batch_size_gen, 
+                                            len(wavelist),
+                                            self.input_dims['x'], 
+                                            self.input_dims['y']),
+                                            dtype=torch.float32, device=device)
 
                 except Exception as e:
-                    print(f'skipping problematic patch: {e}')
+                    # print(f'skipping problematic patch: {e}')
                     continue
 
             # Yield any remaining partial batch if the batchgen has been exhausted
-            if len(batch_x)>0:
-                batch_x = torch.stack(batch_x, dim=0)
-                meta_infos = torch.stack([torch.stack(metas) for metas in meta_infos])
-                yield dict(x=batch_x,
-                           y=batch_y,
-                           meta_info=meta_infos,
-                           wave_list=wavelist,
-                           bandwidth=bandwidth,
-                           language_embed=language_embed,
-                           input_mode=input_mode,
-                           kernel_size=kernel_size)
+            if len(batch_y)>0:
+                batch_x_partial = batch_x[:len(batch_y)]
+                batch_x_partial = self.normalise(batch_x_partial).clamp(min=-1.0, max=1.0)
+                batch_x_partial = torch.nan_to_num(batch_x_partial, nan=-1.0)
+                yield dict( x=batch_x_partial,
+                            y=batch_y,
+                            meta_info=torch.stack([torch.stack(metas) for metas in meta_infos]),
+                            wave_list=wavelist,
+                            bandwidth=bandwidth,
+                            language_embed=language_embed,
+                            input_mode=input_mode,
+                            kernel_size=kernel_size)
 
 class CopernicusFMDataModule(L.LightningDataModule):
     """
@@ -386,6 +387,7 @@ class CopernicusFMDataModule(L.LightningDataModule):
                  augmentation: Union[Callable, str]=None,
                  batch_size_gen: int=1,
                  num_workers: int=4,
+                 prefetch_factor: int = 8,
                  split_ratio: float=0.8,
                  filter_thres: float=0.05,
                  random_state: int=46):
@@ -399,6 +401,7 @@ class CopernicusFMDataModule(L.LightningDataModule):
         self.augmentation = augmentation
         self.batch_size_gen = batch_size_gen
         self.num_workers = num_workers
+        self.prefetch_factor = prefetch_factor
         self.split_ratio = split_ratio
         self.filter_thres = filter_thres
         self.random_state = random_state
@@ -506,7 +509,6 @@ class CopernicusFMDataModule(L.LightningDataModule):
 
         if stage == "predict":
             pred_samples = self.construct_samples(zarr_pathss, path_kindss)
-            print(zarr_pathss)
             self.pred_ds = CopernicusFMDataset(pred_samples,
                                                 input_dims=self.input_dims,
                                                 input_overlap=self.input_overlap,
@@ -521,14 +523,20 @@ class CopernicusFMDataModule(L.LightningDataModule):
         return DataLoader(
             dataset= self.train_ds,
             batch_size=None,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=self.prefetch_factor
         )
     def val_dataloader(self):
         """Return PyTorch DataLoader for validation data."""
         return DataLoader(
             dataset= self.val_ds,
             batch_size=None,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=self.prefetch_factor
         )
 
     def test_dataloader(self):
@@ -536,7 +544,10 @@ class CopernicusFMDataModule(L.LightningDataModule):
         return DataLoader(
             dataset=self.test_ds,
             batch_size=None,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=self.prefetch_factor
         )
 
     def predict_dataloader(self):
@@ -544,7 +555,10 @@ class CopernicusFMDataModule(L.LightningDataModule):
         return DataLoader(
             dataset= self.pred_ds,
             batch_size=None,
-            num_workers=self.num_workers
+            num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=self.prefetch_factor
         )
 
 
