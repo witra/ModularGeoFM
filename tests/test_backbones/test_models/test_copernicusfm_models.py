@@ -61,7 +61,7 @@ def monkeypatched_env(monkeypatch, dummy_encoder, dummy_decoder, dummy_head):
         ("vit_small_patch16", 16, 384),
         ("vit_base_patch16", 16, 768),
         ("vit_large_patch16", 16, 1024),
-        ("vit_huge_patch14", 16, 1280),
+        ("vit_huge_patch14", 14, 1280),
     ],
 )
 def test_init_valid_encoders(monkeypatched_env, encoder_name, expected_patch, expected_dim, dummy_encoder_config, dummy_decoder_config):
