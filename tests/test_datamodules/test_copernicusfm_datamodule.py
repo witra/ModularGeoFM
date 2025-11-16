@@ -93,7 +93,7 @@ def test_create_batch_generator(mock_bg, ds):
                                     input_dims=ds.input_dims,
                                     input_overlap=ds.input_overlap)
     
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.np.stack")    
+
 @patch("modulargeofm.datamodules.copernicusfm_datamodule.Normalize")
 @patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMDataset.create_batch_generator")
 @patch("modulargeofm.datamodules.copernicusfm_datamodule.xr.open_zarr")
@@ -102,14 +102,13 @@ def test_iter_yields_batches(mock_get_worker,
                              mock_xr_open, 
                              mock_batchgen, 
                              mock_normalize,
-                             mock_np_stack, 
                              ds, 
                              worker_info):
     """Test the __iter__ method yields expected dict structure."""
     ds, mode = ds
     coord_x = list(range(ds.input_dims['x']))
     coord_y = list(range(ds.input_dims['y']))
-    num_channels = 5
+    num_channels = 3
     batch_size = ds.batch_size_gen
     
     # mock workers
@@ -138,7 +137,10 @@ def test_iter_yields_batches(mock_get_worker,
     accept_patch.__getitem__.side_effect = lambda key: accept_x_central if key == 'x' else accept_y_central if key == 'y' else None
 
     accept_array = MagicMock()
-    accept_array.values.squeeze.return_value = torch.rand(num_channels, ds.input_dims['y'], ds.input_dims['x'])
+    batch_size = ds.batch_size_gen
+    accepted_array_predict = torch.randint(1,5, (num_channels,  ds.input_dims['y'], ds.input_dims['x'])).detach().cpu().numpy()
+    accepted_array_non_predict = torch.randint(1,5, (num_channels+1,  ds.input_dims['y'], ds.input_dims['x'])).detach().cpu().numpy()
+    accept_array.values.squeeze.return_value = accepted_array_predict if mode == 'predict' else accepted_array_non_predict
     accept_patch.to_array.return_value = accept_array
 
     accept_x_coords = MagicMock()
@@ -163,7 +165,9 @@ def test_iter_yields_batches(mock_get_worker,
     reject_patch.__getitem__.side_effect = lambda key: reject_x_central if key == 'x' else reject_y_central if key == 'y' else None
 
     reject_array = MagicMock()
-    reject_array.values.squeeze.return_value = torch.zeros(num_channels, ds.input_dims['y'], ds.input_dims['x'])
+    null_array_predict_predict = torch.zeros(num_channels, ds.input_dims['y'], ds.input_dims['x']).detach().cpu().numpy()
+    null_array_predict_non_predict = torch.zeros(num_channels+1, ds.input_dims['y'], ds.input_dims['x']).detach().cpu().numpy()
+    reject_array.values.squeeze.return_value = null_array_predict_predict if mode == 'predict' else null_array_predict_non_predict
     reject_patch.to_array.return_value = reject_array
 
     reject_x_coords = MagicMock()
@@ -187,14 +191,6 @@ def test_iter_yields_batches(mock_get_worker,
     mock_normalize_instance = MagicMock()
     mock_normalize_instance.side_effect = lambda x: x  # identity function
     mock_normalize.return_value = mock_normalize_instance
-
-    # mock verify_fn
-    ds.verify_fn = MagicMock(side_effect=[True, False, False])
-
-    # mock np.stack
-    mock_np_stack_instance = MagicMock()
-    mock_np_stack_instance.side_effect = lambda x: mock_np_stack_instance
-    mock_np_stack.return_value = mock_np_stack_instance
 
     # --- Act ---
     outputs = next(iter(ds))
@@ -300,7 +296,6 @@ def test_construct_samples(datamodule):
     zarr_paths = ['dummy1.zaar', 'dummy3.zaar', 'dummyZ.zaar']
     kinds = ['kind1', 'kind1', 'kind2']
     samples = datamodule.construct_samples(zarr_paths, kinds)
-    print('samples', samples)
 
     assert isinstance(samples, dict)
     assert all(isinstance(samples[key], dict) for key in samples.keys())
