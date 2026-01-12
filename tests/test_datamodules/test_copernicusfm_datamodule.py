@@ -5,7 +5,7 @@ import torch
 import yaml
 from unittest.mock import MagicMock, patch, mock_open
 from box import Box
-from modulargeofm.datamodules.copernicusfm_datamodule import CopernicusFMDataset, CopernicusFMDataModule 
+from modulargeofm.datamodules.copernicusfm_datamodule import CopernicusFMIterableDataset, CopernicusFMIterableDataModule 
 
 @pytest.fixture
 def dummy_samples():
@@ -32,13 +32,13 @@ def dummy_samples():
                         ])
 def ds(dummy_samples, request):
     mode, batch_size = request.param
-    ds = CopernicusFMDataset(
+    ds = CopernicusFMIterableDataset(
         samples=dummy_samples,
         input_dims={'x': 16, 'y': 16},
         input_overlap={'x': 0, 'y': 0},
         mode=mode,
-        verify_fn='basic',
-        batch_size_gen=batch_size,
+        verify_x_fn='basic',
+        batch_size=batch_size,
         augmentation=None,
         filter_thres=0.05
     )
@@ -67,12 +67,12 @@ def test_dataset_init_basic(ds, request):
 def test_invalid_verify_fn_raises(dummy_samples):
     """Invalid verify_fn must raise ValueError."""
     with pytest.raises(ValueError):
-        CopernicusFMDataset(
+        CopernicusFMIterableDataset(
             samples=dummy_samples,
             input_dims={"x": 16, "y": 16},
             input_overlap=None,
             mode="train",
-            verify_fn="unknown"
+            verify_x_fn="unknown"
         )
 
 def test_basic_filter_threshold(ds):
@@ -245,7 +245,7 @@ META = {
 def datamodule():
     yaml_content = yaml.dump(META)
     with patch("builtins.open", mock_open(read_data=yaml_content)):
-        dm =  CopernicusFMDataModule(
+        dm =  CopernicusFMIterableDataModule(
             zarr_dirs=['./dummy_zarr_dir1/', './dummy_zarr_dir2/'],
             data_kinds=['S2_xz', 'DEM_yz'],
             metadata_path='./dummy_metadata.yaml',
@@ -253,7 +253,7 @@ def datamodule():
             input_overlap={'x': 16, 'y': 16},
             verify_fn='basic',
             augmentation=None,
-            batch_size_gen=2,
+            batch_size=2,
             num_workers=0,
             filter_thres=0.01,
         )
@@ -265,7 +265,7 @@ def test_copernicusfm_datamodule_init(mock_open_func):
     """Test datamodule initialization."""
     
     metadata_path = './dummy_metadata.yaml'
-    dm =  CopernicusFMDataModule(
+    dm =  CopernicusFMIterableDataModule(
         zarr_dirs=['./dummy_zarr_dir1/', './dummy_zarr_dir2/',],
         data_kinds=['S2_xz', 'DEM_yz'],
         metadata_path=metadata_path,
@@ -273,7 +273,7 @@ def test_copernicusfm_datamodule_init(mock_open_func):
         input_overlap={'x': 16, 'y': 16},
         verify_fn='basic',
         augmentation=None,
-        batch_size_gen=2,
+        batch_size=2,
         num_workers=0,
         filter_thres=0.01,
         )
@@ -287,7 +287,7 @@ def test_copernicusfm_datamodule_init(mock_open_func):
     assert isinstance(dm.input_overlap, dict) and dm.input_overlap == {'x': 16, 'y': 16}
     assert callable(dm.verify_fn) or dm.verify_fn == 'basic'
     assert callable(dm.augmentation) or dm.augmentation is None
-    assert isinstance(dm.batch_size_gen, int) and dm.batch_size_gen == 2
+    assert isinstance(dm.batch_size, int) and dm.batch_size == 2
     assert isinstance(dm.num_workers, int) and dm.num_workers == 0
     assert isinstance(dm.split_ratio, float) and dm.split_ratio == 0.8
     assert isinstance(dm.filter_thres, float) and dm.filter_thres == 0.01
