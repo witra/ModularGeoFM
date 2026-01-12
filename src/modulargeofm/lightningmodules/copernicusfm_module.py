@@ -21,9 +21,9 @@ class CopernicusMLPModule(L.LightningModule):
             decoder_config,
             num_classes)
         self.loss_fn = CombinedSegLoss(num_classes=num_classes,
-                                       ce_weight=0.4,
+                                       ce_weight=0.2,
                                        tversky_weight=0.3,
-                                       boundary_weight=0.3)
+                                       boundary_weight=0.5)
         self.val_metrics_fn = SegmentationMetrics(num_classes=num_classes, tversky_alpha=0.7, tversky_beta=0.3)
         self.test_metrics_fn = SegmentationMetrics(num_classes=num_classes, tversky_alpha=0.7, tversky_beta=0.3)
         self.yhat_post_fn = yhat_post_fn
@@ -39,6 +39,9 @@ class CopernicusMLPModule(L.LightningModule):
 
     def test_step(self, batch):
         return self.shared_step(batch, 'test')
+
+    def on_fit_start(self):
+        self.to(dtype=torch.float32)
 
     def predict_step(self, batch):
         coords = batch['y']
@@ -59,7 +62,10 @@ class CopernicusMLPModule(L.LightningModule):
        return optimizer
 
     def shared_step(self, batch, mode):
-        y_hat = torch.stack(batch["y"], dim=0).to(self.device)
+        y_hat = batch["y"] #torch.stack(batch["y"], dim=0).to(self.device)
+        batch['wave_list'] = batch['wave_list'][0] if batch['wave_list'].ndim > 1 else batch['wave_list']
+        batch['bandwidth'] = batch['bandwidth'][0] if batch['bandwidth'].ndim > 1 else batch['bandwidth']
+        batch['input_mode'] = batch['input_mode'][0] if isinstance( batch['input_mode'], list) else batch['input_mode']
         batch.pop('y')
         if self.yhat_post_fn: # adjust y_hat size according to task type e.g., binary segmentation
             y_hat = self.yhat_post_fn(y_hat)
@@ -67,27 +73,50 @@ class CopernicusMLPModule(L.LightningModule):
         mask_yhat = torch.isfinite(y_hat) # (B, 1, H, W), not one-hot code yet
         mask = mask_x & mask_yhat
         pred_logits = self.model(batch)
-        loss = self.loss_fn(pred_logits, y_hat, mask=mask, eps=1e-6)
+        total_loss, ce_loss, tversky_loss, boundary_loss = self.loss_fn(pred_logits, y_hat, mask=mask, eps=1e-6)
 
         # Log and check for NaNs
-        if torch.isnan(loss):
-            raise ValueError(f"NaN loss detected!, {loss}")
-
+        if torch.isnan(total_loss):
+            raise ValueError(f"NaN loss detected!, {total_loss}")
         if mode == 'val':
             self.val_metrics_fn.update(pred_logits, y_hat, mask=mask)
         
         if mode == 'test':
             self.test_metrics_fn.update(pred_logits, y_hat, mask=mask)
 
-        self.log(name=f"{mode}_loss",
+        self.log(name=f"{mode}_losstotal",
                 batch_size=len(batch['x']),
-                value=loss,
+                value=total_loss,
                 on_step=True,
                 on_epoch=True,
                 prog_bar=True,
                 logger=True,
                 sync_dist=True)
-        return loss
+        self.log(name=f"{mode}_lossce",
+                batch_size=len(batch['x']),
+                value=ce_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                logger=True,
+                sync_dist=True)
+        self.log(name=f"{mode}_losstversky",
+                batch_size=len(batch['x']),
+                value=tversky_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                logger=True,
+                sync_dist=True)
+        self.log(name=f"{mode}_lossboundary",
+                batch_size=len(batch['x']),
+                value=boundary_loss,
+                on_step=True,
+                on_epoch=True,
+                prog_bar=True,
+                logger=True,
+                sync_dist=True)
+        return total_loss
     
     def on_validation_epoch_end(self):
         metrics = self.val_metrics_fn.compute()
