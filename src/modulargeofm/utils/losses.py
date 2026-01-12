@@ -13,7 +13,7 @@ def tversky_loss(pred_logits, target, mask=None, alpha=0.7, beta=0.3, eps=1e-6, 
 
     Args:
         pred_logits (Tensor): Raw model logits of shape (B, C, H, W).
-        target (Tensor): Ground-truth labels of shape (B, H, W) with class indices.
+        target (Tensor): Ground-truth labels of shape (B, H, W) with class indices. #TODO: change to one hot code (B, C, H, W)?
         mask (Tensor, optional): Spatial mask of shape (B, 1, H, W) or (B, H, W).
             Elements outside the mask do not contribute to the loss.
         alpha (float): Weight for false positives (FP).
@@ -31,7 +31,6 @@ def tversky_loss(pred_logits, target, mask=None, alpha=0.7, beta=0.3, eps=1e-6, 
         • Supports optional spatial masking for partial supervision.
     """
     p = torch.sigmoid(pred_logits) if num_classes == 1 else torch.softmax(pred_logits, dim=1)
-    target = to_one_hot(target, num_classes)
 
     if mask is not None and mask.ndim < target.ndim:
         mask = mask.unsqueeze(1)  # [B,1,H,W]
@@ -75,7 +74,7 @@ def boundary_loss(pred_logits, target, mask=None, alpha=0.5, beta=0.5,  eps=1e-1
     pred_logits : torch.Tensor
         Raw logits [B,C,H,W]. Sigmoid (binary) or softmax (multiclass)
         is applied internally.
-    target : torch.Tensor
+    target : torch.Tensor #TODO: change to one hot code (B, C, H, W)?
         Ground‐truth labels [B,H,W].
     mask : torch.Tensor, optional
         Optional mask [B,1,H,W] to restrict the loss computation.
@@ -100,7 +99,6 @@ def boundary_loss(pred_logits, target, mask=None, alpha=0.5, beta=0.5,  eps=1e-1
     """
 
     p = torch.sigmoid(pred_logits) if num_classes == 1 else torch.softmax(pred_logits, dim=1)
-    target = to_one_hot(target, num_classes)
 
     if mask is not None and mask.ndim < p.ndim:
         mask = mask.unsqueeze(1)
@@ -133,7 +131,7 @@ def boundary_iou_loss(pred_logits, target, mask=None, num_classes=1, kernel_size
     pred_logits : torch.Tensor
         Logits from the model, shape [B, C, H, W] for multiclass or [B, 1, H, W] for binary.
     target : torch.Tensor
-        Ground truth labels, shape [B, H, W].
+        Ground truth labels, shape [B, H, W]. #TODO: change to one hot code (B, C, H, W)?
     mask : torch.Tensor, optional
         Optional mask to select regions for boundary IoU computation, shape [B, H, W] or [B,1,H,W].
     num_classes : int, default=1
@@ -154,7 +152,6 @@ def boundary_iou_loss(pred_logits, target, mask=None, num_classes=1, kernel_size
         Boundary IoU. Scalar if reduction='mean' or 'sum', else per-class tensor of shape [C].
     """
     p = torch.sigmoid(pred_logits) if num_classes == 1 else torch.softmax(pred_logits, dim=1)
-    target = to_one_hot(target, num_classes).float()
     
     pred_boundary = boundary_map(p, kernel_size=kernel_size)
     target_boundary = boundary_map(target, kernel_size=kernel_size)
@@ -223,7 +220,7 @@ class CombinedSegLoss:
     >>> loss = loss_fn(pred_logits, target)
     """
     def __init__(self,
-                 num_classes=1,
+                 num_classes=2,
                  ce_weight=0.4,
                  tversky_weight=0.3,
                  boundary_weight=0.3,
@@ -241,16 +238,16 @@ class CombinedSegLoss:
         self.boundary_beta = boundary_beta
 
     def __call__(self, pred_logits, target, mask=None, eps=1e-6):
-        target_one_hot = to_one_hot(target, self.num_classes)
-
         if mask is not None and mask.ndim < pred_logits.ndim:
             mask = mask.unsqueeze(1)
+        target = target.squeeze(1) if target.ndim == 4 and target.shape[1] == 1 else target
+        target_one_hot  = to_one_hot(target, self.num_classes)
 
         # BCE / CE
-        if self.num_classes == 1:
+        if self.num_classes == 2:
             ce_elementwise = F.binary_cross_entropy_with_logits(pred_logits, target_one_hot, reduction='none')
         else:
-            ce_elementwise = F.cross_entropy(pred_logits, target, reduction='none').unsqueeze(1)
+            ce_elementwise = F.cross_entropy(pred_logits, target.long(), reduction='none').unsqueeze(1)
 
         if mask is not None:
             ce = (ce_elementwise * mask).sum() / (mask.sum() + eps)
@@ -259,7 +256,7 @@ class CombinedSegLoss:
 
         # Tversky
         tversky = tversky_loss(pred_logits,
-                               target,
+                               target_one_hot,
                                mask=mask,
                                alpha=self.tversky_alpha,
                                beta=self.tversky_beta,
@@ -269,7 +266,7 @@ class CombinedSegLoss:
 
         # boundary loss
         # boundary = boundary_loss(pred_logits,
-        #                           target,
+        #                           target_one_hot,
         #                           mask=mask,
         #                           alpha=self.boundary_alpha,
         #                           beta=self.boundary_beta,
@@ -277,11 +274,15 @@ class CombinedSegLoss:
         #                           num_classes=self.num_classes
         #                               )
         boundary = boundary_iou_loss(pred_logits, 
-                                     target, 
+                                     target_one_hot, 
                                      mask=mask, 
                                      num_classes=self.num_classes, 
                                      kernel_size=3, 
                                      reduction='mean', 
                                      eps=1e-6)
-        return self.ce_w * ce + self.tversky_w * tversky + self.boundary_w * boundary
+        ce_loss = self.ce_w * ce
+        tverky_loss = self.tversky_w * tversky
+        boundary_loss = self.boundary_w * boundary
+        total = ce_loss + tverky_loss + boundary_loss
+        return total, ce_loss, tverky_loss, boundary_loss
 
