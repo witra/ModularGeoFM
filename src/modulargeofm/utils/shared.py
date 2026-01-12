@@ -11,13 +11,13 @@ def to_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
     x : torch.Tensor
         Integer tensor of shape [B, H, W] representing class labels.
     num_classes : int
-        Number of classes. For binary segmentation, set num_classes=1.
+        Number of classes. For binary segmentation, set num_classes=2.
 
     Returns
     -------
     torch.Tensor
         One-hot encoded tensor of shape [B, C, H, W], where C=num_classes.
-        For binary case (num_classes=1), returns a float tensor with shape
+        For binary case (num_classes=2), returns a float tensor with shape
         [B, 1, H, W].
     
     Notes
@@ -25,9 +25,9 @@ def to_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
     - Input tensor should contain integer class labels in [0, num_classes-1].
     - Values are converted to float.
     """
-    if num_classes != 1:
+    if num_classes != 2:
          return F.one_hot(x.long(), num_classes).permute(0, 3, 1, 2).float()
-    if x.dim() == 3:  # [B,H,W] # Binary casae
+    if x.dim() == 3:  # [B,H,W] to [B,1,H,W] # Binary case
          x = x.unsqueeze(1)
     return x.float()
 
