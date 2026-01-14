@@ -9,13 +9,13 @@ from modulargeofm.utils.shared import to_one_hot, boundary_map
         (torch.tensor([[[0, 1], [2, 1]]]), 3, (1, 3, 2, 2)),
 
         # --- Binary case: num_classes=1 ---
-        (torch.tensor([[[0, 1], [1, 0]]]), 1, (1, 1, 2, 2)),
+        (torch.tensor([[[0, 1], [1, 0]]]), 2, (1, 1, 2, 2)),
 
         # --- Already has channel dimension (simulated by squeeze/unsqueeze) ---
-        (torch.tensor([[[0, 1], [1, 0]]]), 1, (1, 1, 2, 2)),
+        (torch.tensor([[[0, 1], [1, 0]]]), 2, (1, 1, 2, 2)),
 
         # --- Larger batch, multi-class ---
-        (torch.randint(0, 4, (5, 4, 4)), 4, (5, 4, 4, 4))
+        (torch.randint(0, 4, (5, 4, 4)), 5, (5, 5, 4, 4))
     ],
 )
 def test_to_one_hot(x, num_classes, expected_shape):
