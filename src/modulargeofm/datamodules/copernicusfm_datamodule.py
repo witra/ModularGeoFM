@@ -77,7 +77,7 @@ class CopernicusFMIterableDataset(IterableDataset):
 
     Examples
     --------
-    >>> dataset = CopernicusFMDataset(
+    >>> dataset = CopernicusFMIterableDataset(
     ...     samples=my_samples,
     ...     input_dims={'x': 128, 'y': 128},
     ...     input_overlap={'x': 8, 'y': 8},
@@ -110,14 +110,14 @@ class CopernicusFMIterableDataset(IterableDataset):
         if verify_x_fn == 'default':
             self.verify_x_fn = partial(self.filter_x, threshold=self.filter_thres)
         elif callable(verify_x_fn):
-            self.verify_x_fn = verify_x_fn
+            self.verify_x_fn = verify_x_fn # TODO: further rework on custom function
         else:
             raise ValueError(f"Invalid verify_fn: {verify_x_fn}")
         
         if verify_y_fn == 'default':
             self.verify_y_fn = partial(self.filter_y)
         elif callable(verify_y_fn):
-            self.verify_y_fn = verify_y_fn
+            self.verify_y_fn = verify_y_fn # TODO: further rework on custom function
         else:
             raise ValueError(f"Invalid verify_fn: {verify_y_fn}")
 
@@ -144,7 +144,7 @@ class CopernicusFMIterableDataset(IterableDataset):
 
     def filter_y(self, batch_patches:torch.tensor):
         """ 
-        Filtering function for rejecting invalid label patches. 
+        Filtering function for rejecting invalid label patches. At least there is 2 classes.
         """
         batch_size = batch_patches.shape[0]
         patches_flat = batch_patches.view(batch_size, -1)
@@ -389,13 +389,13 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
 
     Attributes
     ----------
-    train_ds : CopernicusFMDataset
+    train_ds : CopernicusFMIterableDataset
         Training dataset instance.
-    val_ds : CopernicusFMDataset
+    val_ds : CopernicusFMIterableDataset
         Validation dataset instance.
-    test_ds : CopernicusFMDataset
+    test_ds : CopernicusFMIterableDataset
         Testing dataset instance.
-    pred_ds : CopernicusFMDataset
+    pred_ds : CopernicusFMIterableDataset
         Prediction dataset instance.
 
     Methods
