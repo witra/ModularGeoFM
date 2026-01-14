@@ -25,7 +25,7 @@ def to_one_hot(x: torch.Tensor, num_classes: int) -> torch.Tensor:
     - Input tensor should contain integer class labels in [0, num_classes-1].
     - Values are converted to float.
     """
-    if num_classes != 2:
+    if num_classes > 2:
          return F.one_hot(x.long(), num_classes).permute(0, 3, 1, 2).float()
     if x.dim() == 3:  # [B,H,W] to [B,1,H,W] # Binary case
          x = x.unsqueeze(1)
