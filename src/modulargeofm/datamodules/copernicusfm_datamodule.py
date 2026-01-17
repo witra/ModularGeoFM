@@ -1,24 +1,25 @@
 import glob
 import math
 from functools import partial
+from itertools import batched
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal, Union
 
 import lightning as L
-import numpy as np
+import rioxarray
 import torch
 import xarray as xr
 import yaml
-import rioxarray 
+import zarr
 from box import Box
 from kornia.augmentation import Normalize
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+from torch.utils.data import (DataLoader, Dataset, IterableDataset,
+                              get_worker_info)
 from xbatcher import BatchGenerator
-from typing import Union, Callable
 
 
-class CopernicusFMDataset(IterableDataset):
+class CopernicusFMIterableDataset(IterableDataset):
     """
     Iterable PyTorch dataset for handling Copernicus Foundation Model (FM) data stored in Zarr format.
     This dataset dynamically reads and batches satellite data from multiple modalities, applying
@@ -76,7 +77,7 @@ class CopernicusFMDataset(IterableDataset):
 
     Examples
     --------
-    >>> dataset = CopernicusFMDataset(
+    >>> dataset = CopernicusFMIterableDataset(
     ...     samples=my_samples,
     ...     input_dims={'x': 128, 'y': 128},
     ...     input_overlap={'x': 8, 'y': 8},
@@ -90,8 +91,9 @@ class CopernicusFMDataset(IterableDataset):
                  input_overlap,
                  mode: Literal["train", "val", "test", "predict"],
                  augmentation=None,
-                 verify_fn ='basic',
-                 batch_size_gen=1,
+                 verify_x_fn ='default',
+                 verify_y_fn ='default',
+                 batch_size=1,
                  time_dim='time',
                  filter_thres=0.05
                  ) -> None:
@@ -100,16 +102,24 @@ class CopernicusFMDataset(IterableDataset):
         self.input_dims = input_dims
         self.input_overlap = input_overlap or {}
         self.augmentation = augmentation
-        self.batch_size_gen = batch_size_gen
+        self.batch_size = batch_size
         self.time_dim = time_dim
         self.mode = mode
         self.filter_thres = filter_thres
-        if verify_fn == 'basic':
-            self.verify_fn = partial(self.basic_filter, threshold=self.filter_thres)
-        elif callable(verify_fn):
-            self.verify_fn = verify_fn
+
+        if verify_x_fn == 'default':
+            self.verify_x_fn = partial(self.filter_x, threshold=self.filter_thres)
+        elif callable(verify_x_fn):
+            self.verify_x_fn = verify_x_fn # TODO: further rework on custom function
         else:
-            raise ValueError(f"Invalid verify_fn: {verify_fn}")
+            raise ValueError(f"Invalid verify_fn: {verify_x_fn}")
+        
+        if verify_y_fn == 'default':
+            self.verify_y_fn = partial(self.filter_y)
+        elif callable(verify_y_fn):
+            self.verify_y_fn = verify_y_fn # TODO: further rework on custom function
+        else:
+            raise ValueError(f"Invalid verify_fn: {verify_y_fn}")
 
 
     def create_batch_generator(self, subset):
@@ -129,9 +139,19 @@ class CopernicusFMDataset(IterableDataset):
         return BatchGenerator(
             subset,
             input_dims=self.input_dims,
-            input_overlap=self.input_overlap)
+            input_overlap=self.input_overlap,
+            )
 
-    def basic_filter(self, patch, threshold=0.05):
+    def filter_y(self, batch_patches:torch.tensor):
+        """ 
+        Filtering function for rejecting invalid label patches. At least there is 2 classes.
+        """
+        batch_size = batch_patches.shape[0]
+        patches_flat = batch_patches.view(batch_size, -1)
+        has_multiple_labels = torch.any(patches_flat != patches_flat[:, :1], dim=1)
+        return has_multiple_labels
+
+    def filter_x(self, batch_patches:torch.tensor, threshold=0.05):
         """ 
         Basic filtering function for rejecting invalid patches. 
         
@@ -147,15 +167,12 @@ class CopernicusFMDataset(IterableDataset):
         bool 
             ``True`` if patch is valid, ``False`` otherwise. 
         """
-
-        total_elements = patch.numel()  # total number of elements
-        # guard against empty patches
-        if total_elements == 0:
-            # treat an empty patch as invalid (reject)
-            return False
-        invalid_mask = (patch == 0) | torch.isnan(patch)
-        invalid_fraction = invalid_mask.sum().float() / total_elements
-        return invalid_fraction < threshold
+        batch_size = batch_patches.shape[0]
+        patches_flat = batch_patches.view(batch_size, -1)
+        invalid_mask = (patches_flat == 0) | torch.isnan(patches_flat)
+        invalid_fraction = invalid_mask.sum(dim=1).float() / patches_flat.shape[1]
+        valid_mask = (invalid_fraction < threshold).to(torch.int)
+        return valid_mask.bool()
 
     def __iter__(self):
         """ 
@@ -170,9 +187,7 @@ class CopernicusFMDataset(IterableDataset):
             Dictionary containing processed batch data and metadata. 
         """
         # handling splitting logic for workers cleverly in the case of different num of samples and time dimension.
-        
-        device = torch.device("cpu") # "cuda" if torch.cuda.is_available() else
-        
+
         # get num of dataset modalities
         keys = list(self.samples.keys())
 
@@ -181,7 +196,7 @@ class CopernicusFMDataset(IterableDataset):
 
         for key in keys:
             modality = self.samples.get(key)
-            xr_dataset = xr.open_zarr(modality.get('pixels_path'), chunks=None)
+            xr_dataset = xr.open_zarr(modality.get('pixels_path'), decode_coords="all", chunks=None)
             if self.time_dim in xr_dataset.dims:
                 num_times = len(xr_dataset[self.time_dim])
             else:
@@ -201,14 +216,14 @@ class CopernicusFMDataset(IterableDataset):
         for global_index in range(start, end):
             sample_key, xr_dataset, time = sample_time_list[global_index]
             modality = self.samples.get(sample_key)
-            wavelist = modality.get('wavelist', None)
-            bandwidth = modality.get('bandwidth', None)
-            mean = torch.tensor(modality.get('mean'), dtype=torch.float32, device=device)#.view(1, -1, 1, 1)
-            std = torch.tensor(modality.get('std'), dtype=torch.float32, device=device)#.view(1, -1, 1, 1)
+            wavelist = torch.tensor(modality.get('wavelist', None))
+            bandwidth = torch.tensor(modality.get('bandwidth', None))
+            mean = torch.tensor(modality.get('mean'), dtype=torch.float32)
+            std = torch.tensor(modality.get('std'), dtype=torch.float32)
             bandnames = modality.get('bandnames', None)
             language_embed = modality.get('language_embed', None)
             input_mode = modality.get('input_mode')
-            kernel_size = torch.tensor(modality['kernel_size']) if modality.get('kernel_size') is not None else None
+            kernel_size = torch.tensor(modality['kernel_size']) if modality.get('kernel_size') is not None else 16 # folllow the default from copernicusfm
             self.normalise = Normalize(mean=mean, std=std)
 
             if self.mode == 'predict':
@@ -227,85 +242,118 @@ class CopernicusFMDataset(IterableDataset):
             # batch generator
             batch_gen = iter(self.create_batch_generator(subset))
 
-            # # Collect and yield batches
-            batch_y, meta_infos = [], []
+            for batch in batched(batch_gen, self.batch_size):
+                batch_tensor = []
+                xcenter_batch_tensor = []
+                ycenter_batch_tensor = []
+                xcoord_batch = []
+                ycoord_batch = []
+                spatial_ref_batch = []
+                
+                for patch_ds in batch:
+                    # print('patch ds', patch_ds)
+                    patch_np = patch_ds.to_array(dim='pixels').values
+                    x_coords = patch_ds['x']
+                    y_coords = patch_ds['y']
+                    spatial_ref = patch_ds.rio.crs.to_epsg()
 
-            batch_x = torch.empty((self.batch_size_gen, 
-                                   len(wavelist),
-                                   self.input_dims['x'], 
-                                   self.input_dims['y']),
-                                   dtype=torch.float32, device=device)
+                    xcenter_patch_np = x_coords.mean().values
+                    ycenter_patch_np = y_coords.mean().values
 
-            for patch_ds in batch_gen:
-                try:
-                    patch_np = patch_ds.to_array(dim='pixels').values.squeeze()
-                    patch_tensor = torch.from_numpy(patch_np).float().to(device)
+                    x_coords = x_coords.values
+                    y_coords = y_coords.values
+
+                    patch_tensor = torch.from_numpy(patch_np).float().squeeze()
+                    xcenter_patch_tensor = torch.from_numpy(xcenter_patch_np).float()
+                    ycenter_patch_tensor = torch.from_numpy(ycenter_patch_np).float()
                     
-                    # verify per patch
-                    status = False
-                    if self.mode != 'predict':
-                        patch_test = patch_tensor[1:, :, :] # take only the actual data
-                        status = self.verify_fn(patch_test) # T/F
-                    if self.mode == 'predict':
-                        status = True
-                    if status:
-                        x_c = torch.tensor(patch_ds['x'].values.mean(), dtype=torch.float32)
-                        y_c = torch.tensor(patch_ds['y'].values.mean(), dtype=torch.float32)
-                        time = torch.tensor(np.nan)
-                        meta_info = x_c, y_c, time, area,
-                        # perform augmentation and normalization
-                        if self.augmentation and self.mode != 'predict':
-                            patch_tensor = self.augmentation(patch_tensor)
-                        if self.mode=='predict':
-                            # setup the coordinate x, y, and spatial ref
-                            coords_y = patch_ds.coords['y'].values
-                            coords_x = patch_ds.coords['x'].values
-                            spatial_ref = patch_ds.rio.crs.to_epsg()
-                            y = [coords_y, coords_x, spatial_ref]
-                            pixels_x = patch_tensor
-                        else:
-                            y = patch_tensor[0,  :, :]
-                            pixels_x = patch_tensor[1:, :, :]
-                        batch_x[len(batch_y)] = pixels_x  # <--- write directly into preallocated batch tensor
-                        batch_y.append(y)
-                        meta_infos.append(meta_info)
-                    if len(batch_y) == self.batch_size_gen:
-                        batch_x = self.normalise(batch_x).clamp(min=-1.0, max=1.0)#.squeeze()
-                        batch_x = torch.nan_to_num(batch_x, nan=-1.0)
-                        yield dict( x=batch_x.clone(),
-                                    y=batch_y.copy(),
-                                    meta_info=torch.stack([torch.stack(metas) for metas in meta_infos]),
-                                    wave_list=wavelist,
-                                    bandwidth=bandwidth,
-                                    language_embed=language_embed,
-                                    input_mode=input_mode,
-                                    kernel_size=kernel_size)
-                        batch_y, meta_infos = [], []
-                        batch_x = torch.empty((self.batch_size_gen, 
-                                            len(wavelist),
-                                            self.input_dims['x'], 
-                                            self.input_dims['y']),
-                                            dtype=torch.float32, device=device)
+                    batch_tensor.append(patch_tensor)
+                    xcenter_batch_tensor.append(xcenter_patch_tensor)
+                    ycenter_batch_tensor.append(ycenter_patch_tensor)
+                    xcoord_batch.append(x_coords)
+                    ycoord_batch.append(y_coords)
+                    spatial_ref_batch.append(spatial_ref)
+                batch_tensor = torch.stack(batch_tensor, dim=0)
+                xcenter_batch_tensor = torch.stack(xcenter_batch_tensor, dim=0)
+                ycenter_batch_tensor = torch.stack(ycenter_batch_tensor, dim=0)
 
-                except Exception as e:
-                    # print(f'skipping problematic patch: {e}')
-                    continue
+                if self.augmentation and self.mode!= 'predict':
+                    batch_tensor = self.augmentation(batch_tensor)
 
-            # Yield any remaining partial batch if the batchgen has been exhausted
-            if len(batch_y)>0:
-                batch_x_partial = batch_x[:len(batch_y)]
-                batch_x_partial = self.normalise(batch_x_partial).clamp(min=-1.0, max=1.0)
-                batch_x_partial = torch.nan_to_num(batch_x_partial, nan=-1.0)
-                yield dict( x=batch_x_partial,
-                            y=batch_y,
-                            meta_info=torch.stack([torch.stack(metas) for metas in meta_infos]),
-                            wave_list=wavelist,
-                            bandwidth=bandwidth,
+                if self.mode != 'predict':
+                    # filter each patch in the batch
+                    x_batch_test = batch_tensor[:, 1:, :, :] # take only the actual data
+                    y_batch_test = batch_tensor[:, 0,  :, :] # label
+                    x_valid_mask = self.verify_x_fn(x_batch_test)
+                    y_valid_mask = self.verify_y_fn(y_batch_test)
+                    valid_mask = x_valid_mask & y_valid_mask
+                    batch_tensor = batch_tensor[valid_mask]
+                    if batch_tensor.shape[0] == 0:
+                        continue
+                    xcenter_batch_tensor = xcenter_batch_tensor[valid_mask]
+                    ycenter_batch_tensor = ycenter_batch_tensor[valid_mask]
+                    batch_y = batch_tensor[:, 0,  :, :] # label
+                else:
+                    batch_y = [ycoord_batch, xcoord_batch, spatial_ref_batch]
+
+                area_tensor = torch.full((batch_tensor.shape[0],), area)
+                time_tensor = torch.full((batch_tensor.shape[0],), torch.nan) #TODO: later, consider time
+                meta_info = torch.stack([xcenter_batch_tensor, ycenter_batch_tensor, time_tensor, area_tensor], dim=1)
+                batch_x = batch_tensor[:, 1:, :, :] # input data
+                batch_x = self.normalise(batch_x).clamp(min=-1.0, max=1.0)
+                batch_x = torch.nan_to_num(batch_x, nan=0.0)
+                yield dict( x=batch_x, # [B, C, H, W]
+                            y=batch_y, # [B, H, W]
+                            meta_info=meta_info, # [B, 4]
+                            wave_list=wavelist, # [C]
+                            bandwidth=bandwidth, # [C]
                             language_embed=language_embed,
-                            input_mode=input_mode,
-                            kernel_size=kernel_size)
+                            input_mode=input_mode, 
+                            kernel_size=kernel_size
+                            )
 
-class CopernicusFMDataModule(L.LightningDataModule):
+class CopernicusFMDataset(Dataset):
+    def __init__(self, chip_zarr_dir, transform=None):
+        self.chip_zarr_dir = chip_zarr_dir
+        self.transform = transform
+        self.index = []
+        self.zarr_paths = glob.glob(f"{self.chip_zarr_dir}/*.zarr")
+        for path_id, zarr_path in enumerate(self.zarr_paths):
+            z = zarr.open(zarr_path, mode='r')
+            n = z['images'].shape[0]
+            self.index.extend([(path_id, i) for i in range(n)])    
+    def __len__(self):
+        return len(self.index)
+    
+    def __getitem__(self, idx):
+        path_id, i = self.index[idx]
+        z = zarr.open(self.zarr_paths[path_id], mode='r')
+        image = torch.from_numpy(z['images'][i])
+        label = torch.from_numpy(z['labels'][i])
+        meta_info = torch.from_numpy(z['meta_info'][i])
+        attrs = z.attrs
+        wavelist = torch.tensor(attrs['wavelist'])
+        bandwidth = torch.tensor(attrs['bandwidth'])
+        # language_embed= [None] #if attrs['language_embed'] == None else attrs['language_embed'] #TODO rework for this variable
+        input_mode = attrs['input_mode']
+        kernel_size = attrs['kernel_size'] if attrs['kernel_size'] is not None else 16 # folllow the default from copernicusfm
+        if self.transform:
+            image = self.transform(image)
+            label = self.transform(label)
+
+        return dict(x=image, 
+                    y=label, 
+                    meta_info=meta_info, # [4]
+                    wave_list=wavelist, # [C]
+                    bandwidth=bandwidth, # [C]
+                    language_embed="None",
+                    input_mode=input_mode, 
+                    kernel_size=kernel_size # [B]
+                    )
+
+        
+    
+class CopernicusFMIterableDataModule(L.LightningDataModule):
     """
     PyTorch Lightning DataModule for managing Copernicus Foundation Model datasets.
     Handles dataset construction, train/validation/test splits, and DataLoader creation.
@@ -340,13 +388,13 @@ class CopernicusFMDataModule(L.LightningDataModule):
 
     Attributes
     ----------
-    train_ds : CopernicusFMDataset
+    train_ds : CopernicusFMIterableDataset
         Training dataset instance.
-    val_ds : CopernicusFMDataset
+    val_ds : CopernicusFMIterableDataset
         Validation dataset instance.
-    test_ds : CopernicusFMDataset
+    test_ds : CopernicusFMIterableDataset
         Testing dataset instance.
-    pred_ds : CopernicusFMDataset
+    pred_ds : CopernicusFMIterableDataset
         Prediction dataset instance.
 
     Methods
@@ -383,9 +431,9 @@ class CopernicusFMDataModule(L.LightningDataModule):
                  metadata_path: str,
                  input_dims: dict,
                  input_overlap: dict={'x': 0, 'y': 0},
-                 verify_fn: Union[Callable, str]='basic',
+                 verify_fn: Union[Callable, str]='default',
                  augmentation: Union[Callable, str]=None,
-                 batch_size_gen: int=1,
+                 batch_size: int=1,
                  num_workers: int=4,
                  prefetch_factor: int = 8,
                  split_ratio: float=0.8,
@@ -399,7 +447,7 @@ class CopernicusFMDataModule(L.LightningDataModule):
         self.input_overlap = input_overlap
         self.verify_fn = verify_fn
         self.augmentation = augmentation
-        self.batch_size_gen = batch_size_gen
+        self.batch_size = batch_size
         self.num_workers = num_workers
         self.prefetch_factor = prefetch_factor
         self.split_ratio = split_ratio
@@ -478,43 +526,43 @@ class CopernicusFMDataModule(L.LightningDataModule):
                                                                           )
             train_samples = self.construct_samples(train_path, train_kind)
             val_samples = self.construct_samples(val_path, val_kind)
-            self.train_ds = CopernicusFMDataset(train_samples,
+            self.train_ds = CopernicusFMIterableDataset(train_samples,
                                                 input_dims=self.input_dims,
                                                 input_overlap=self.input_overlap,
                                                 mode="train",
-                                                verify_fn=self.verify_fn,
-                                                batch_size_gen=self.batch_size_gen,
+                                                verify_x_fn=self.verify_fn,
+                                                batch_size=self.batch_size,
                                                 augmentation=self.augmentation,
                                                 filter_thres=self.filter_thres
                                                 )
-            self.val_ds = CopernicusFMDataset(val_samples,
+            self.val_ds = CopernicusFMIterableDataset(val_samples,
                                                 input_dims=self.input_dims,
                                                 input_overlap=self.input_overlap,
                                                 mode="val",
-                                                verify_fn=self.verify_fn,
-                                                batch_size_gen=self.batch_size_gen,
+                                                verify_x_fn=self.verify_fn,
+                                                batch_size=self.batch_size,
                                                 filter_thres=self.filter_thres
                                                 )
 
         if stage == "test":
             test_samples = self.construct_samples(zarr_pathss, path_kindss)
-            self.test_ds = CopernicusFMDataset(test_samples,
+            self.test_ds = CopernicusFMIterableDataset(test_samples,
                                                input_dims=self.input_dims,
                                                input_overlap=self.input_overlap,
                                                mode="test",
-                                               verify_fn=self.verify_fn,
-                                               batch_size_gen=self.batch_size_gen,
+                                               verify_x_fn=self.verify_fn,
+                                               batch_size=self.batch_size,
                                                filter_thres=self.filter_thres
                                                )
 
         if stage == "predict":
             pred_samples = self.construct_samples(zarr_pathss, path_kindss)
-            self.pred_ds = CopernicusFMDataset(pred_samples,
+            self.pred_ds = CopernicusFMIterableDataset(pred_samples,
                                                 input_dims=self.input_dims,
                                                 input_overlap=self.input_overlap,
-                                                verify_fn=self.verify_fn,
+                                                verify_x_fn=self.verify_fn,
                                                 mode="predict",
-                                                batch_size_gen=self.batch_size_gen,
+                                                batch_size=self.batch_size,
                                                 filter_thres=self.filter_thres
                                                 )
 
@@ -560,5 +608,3 @@ class CopernicusFMDataModule(L.LightningDataModule):
             persistent_workers=True,
             prefetch_factor=self.prefetch_factor
         )
-
-

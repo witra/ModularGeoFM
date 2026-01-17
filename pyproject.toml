@@ -7,7 +7,7 @@ name = "modulargeofm"
 version = "0.0.1"
 description = "Modular components, data pipelines, and experiments for applying foundation models to geospatial (EO) data."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 keywords = ["geospatial", "earth observation", "foundation models", "machine learning", "deep learning"]
 license = {text = "MIT"}
 authors = [

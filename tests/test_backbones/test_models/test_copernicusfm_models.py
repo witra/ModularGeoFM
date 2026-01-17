@@ -100,6 +100,7 @@ def test_freeze_encoder(monkeypatched_env, dummy_encoder_config, dummy_decoder_c
         decoder_config=dummy_decoder_config,
         num_class=3,
     )
+    model.freeze_encoder()
     for param in model.encoder.parameters():
         assert param.requires_grad is False
 
