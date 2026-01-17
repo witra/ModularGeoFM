@@ -1,11 +1,126 @@
-from importlib import metadata
 import os
 import pytest
 import torch
 import yaml
+import types
+import numpy as np
+import xarray as xr
+import zarr
 from unittest.mock import MagicMock, patch, mock_open
 from box import Box
-from modulargeofm.datamodules.copernicusfm_datamodule import CopernicusFMDataset, CopernicusFMDataModule 
+from modulargeofm.datamodules.copernicusfm_datamodule import CopernicusFMIterableDataset, CopernicusFMDataset, CopernicusFMIterableDataModule 
+
+# ----------------------------------------
+# CopernicusFMIterableDataset
+# ----------------------------------------
+class FakeXRArray:
+    def __init__(self, values):
+        self.values = values
+    def mean(self):
+        return self
+
+class FakeXRDataset:
+    def __init__(self, data, bandnames, num_times=1):
+        self.data = data
+        self.bandnames = bandnames
+        self.dims = {"time":num_times} 
+    def __getitem__(self, keys):
+        return self
+    
+    def __len__(self):
+        return self.dims["time"]
+
+    def isel(self, *args, **kwargs):
+        return self
+
+    def expand_dims(self, **kwargs):
+        return self
+
+    def to_array(self, dim=None):
+        return types.SimpleNamespace(values=self._data)
+
+    @property
+    def rio(self):
+        return self
+
+    def resolution(self):
+        return (10.0, 10.0)
+
+    @property
+    def crs(self):
+        return types.SimpleNamespace(to_epsg=lambda: 4326)
+
+    def __getattr__(self, name):
+        if name in ["x", "y"]:
+            return FakeXRArray(np.array([0.0, 1.0]))
+        raise AttributeError
+
+def dummy_accepted_batched_data():
+    C, H, W =  4, 16, 16  # channels, height, width
+    pixels = np.random.rand(C, H, W).astype(np.float32)
+    x = np.arange(W)
+    y = np.arange(H)
+    band = np.arange(C)
+    # batch = np.arange(B)
+    ds = xr.Dataset(
+        data_vars={
+            "pixels": (( "band", "y", "x"), pixels)
+        },
+        coords={
+            "x": ("x", x),
+            "y": ("y", y),
+            "band": ("band", band),
+        }
+    )
+    ds = ds.rio.write_crs("EPSG:4326")
+    return ds
+
+def dummy_reject_batched_data():
+    C, H, W =  4, 16, 16  # channels, height, width
+    pixels = np.zeros((C, H, W)).astype(np.float32)
+    x = np.arange(W)
+    y = np.arange(H)
+    band = np.arange(C)
+    # batch = np.arange(B)
+    ds = xr.Dataset(
+        data_vars={
+            "pixels": (( "band", "y", "x"), pixels)
+        },
+        coords={
+            "x": ("x", x),
+            "y": ("y", y),
+            "band": ("band", band),
+        }
+    )
+    ds = ds.rio.write_crs("EPSG:4326")
+    return ds
+
+class FakeBatchGenerator:
+    def __init__(self, subset):
+        self.subset = subset
+
+    def __iter__(self):
+        dummy_data = [dummy_accepted_batched_data(), dummy_reject_batched_data()]
+        for i in range(len(dummy_data)):
+            yield dummy_data[i]
+
+class FakeNormalize:
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, x):
+        return (x - self.mean.view(1, -1, 1, 1)) / self.std.view(1, -1, 1, 1)
+
+def fake_batched(iterable, batch_size):
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
 
 @pytest.fixture
 def dummy_samples():
@@ -32,13 +147,14 @@ def dummy_samples():
                         ])
 def ds(dummy_samples, request):
     mode, batch_size = request.param
-    ds = CopernicusFMDataset(
+    ds = CopernicusFMIterableDataset(
         samples=dummy_samples,
         input_dims={'x': 16, 'y': 16},
         input_overlap={'x': 0, 'y': 0},
         mode=mode,
-        verify_fn='basic',
-        batch_size_gen=batch_size,
+        verify_x_fn='default',
+        verify_y_fn='default',
+        batch_size=batch_size,
         augmentation=None,
         filter_thres=0.05
     )
@@ -59,7 +175,8 @@ def test_dataset_init_basic(ds, request):
     sample_1 = ds.samples['sample1']
     assert os.path.basename(sample_1['pixels_path']).split('.')[1] == 'zarr'
     assert ds.mode == mode
-    assert callable(ds.verify_fn)
+    assert callable(ds.verify_x_fn)
+    assert callable(ds.verify_y_fn)
     assert isinstance(ds.input_dims, dict)
     assert isinstance(ds.input_overlap, dict)
     assert isinstance(ds.filter_thres, float)
@@ -67,21 +184,28 @@ def test_dataset_init_basic(ds, request):
 def test_invalid_verify_fn_raises(dummy_samples):
     """Invalid verify_fn must raise ValueError."""
     with pytest.raises(ValueError):
-        CopernicusFMDataset(
+        CopernicusFMIterableDataset(
             samples=dummy_samples,
             input_dims={"x": 16, "y": 16},
             input_overlap=None,
             mode="train",
-            verify_fn="unknown"
+            verify_x_fn="unknown",
+            verify_y_fn="unknown"
         )
 
-def test_basic_filter_threshold(ds):
+def test_default_xfilter_threshold(ds):
     """Patch with zeros and NaNs should be filtered out properly."""
     ds, _ = ds
     patch = torch.tensor([[0.0, float("nan")], [1.0, 1.0]])
-    assert not ds.basic_filter(patch, threshold=0.2)
-    assert ds.basic_filter(torch.ones((2,2)), threshold=0.2)
-    assert not ds.basic_filter(torch.tensor([]), threshold=0.2)
+    assert torch.equal(ds.verify_x_fn(patch, threshold=0.2), torch.tensor([False, True]))
+    assert torch.equal(ds.verify_x_fn(torch.ones((2,2)), threshold=0.2), torch.tensor([True, True])) 
+
+def test_default_yfilter_threshold(ds):
+    """Patch with zeros and NaNs should be filtered out properly."""
+    ds, _ = ds
+    patch = torch.tensor([[0.0, 0.0], [1.0, 0.0]])
+    assert torch.equal(ds.verify_y_fn(patch), torch.tensor([False, True]))
+    assert torch.equal(ds.verify_y_fn(torch.ones((2,2))), torch.tensor([False, False])) 
 
 @patch("modulargeofm.datamodules.copernicusfm_datamodule.BatchGenerator")
 def test_create_batch_generator(mock_bg, ds):
@@ -93,138 +217,148 @@ def test_create_batch_generator(mock_bg, ds):
                                     input_dims=ds.input_dims,
                                     input_overlap=ds.input_overlap)
     
-
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.Normalize")
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMDataset.create_batch_generator")
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.xr.open_zarr")
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.get_worker_info")
-def test_iter_yields_batches(mock_get_worker, 
-                             mock_xr_open, 
-                             mock_batchgen, 
-                             mock_normalize,
-                             ds, 
-                             worker_info):
-    """Test the __iter__ method yields expected dict structure."""
+def test_iter_yields_valid_batches(monkeypatch, ds):
+    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.xr.open_zarr",
+                        lambda *a, **k: FakeXRDataset(
+                            data=np.random.rand(2, 4, 4).astype(np.float32),  # [bands, H, W]
+                            bandnames=["label", "b1"],
+                        ))
+    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMIterableDataset.create_batch_generator",
+                        FakeBatchGenerator
+                        )
+    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.Normalize", FakeNormalize)
+    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.batched", fake_batched)
+    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.get_worker_info", lambda: None)
+    
     ds, mode = ds
-    coord_x = list(range(ds.input_dims['x']))
-    coord_y = list(range(ds.input_dims['y']))
+    batch_size = ds.batch_size
     num_channels = 3
-    batch_size = ds.batch_size_gen
-    
-    # mock workers
-    mock_get_worker.return_value = worker_info
 
-    # ------- create Mock xarray dataset ---------
-    mock_xr = MagicMock()
-    mock_xr.dims = ds.input_dims
-    mock_xr.expand_dims.return_value = mock_xr
-    mock_xr.__getitem__.return_value = mock_xr
-
-    mock_rio = MagicMock()
-    mock_rio.resolution.return_value = (10.0, 10.0)
-    mock_xr.rio = mock_rio
-    mock_xr_open.return_value = mock_xr
-
-
-    # --- Create patches ---
-    # accepted patch 
-    accept_patch = MagicMock()
-    accept_x_central = MagicMock()
-    accept_y_central = MagicMock()
-    accept_x_central.values.mean.return_value = ds.input_dims['x']/2
-    accept_y_central.values.mean.return_value = ds.input_dims['y']/2
-    accept_patch.rio.crs.to_epsg.return_value = 4326
-    accept_patch.__getitem__.side_effect = lambda key: accept_x_central if key == 'x' else accept_y_central if key == 'y' else None
-
-    accept_array = MagicMock()
-    batch_size = ds.batch_size_gen
-    accepted_array_predict = torch.randint(1,5, (num_channels,  ds.input_dims['y'], ds.input_dims['x'])).detach().cpu().numpy()
-    accepted_array_non_predict = torch.randint(1,5, (num_channels+1,  ds.input_dims['y'], ds.input_dims['x'])).detach().cpu().numpy()
-    accept_array.values.squeeze.return_value = accepted_array_predict if mode == 'predict' else accepted_array_non_predict
-    accept_patch.to_array.return_value = accept_array
-
-    accept_x_coords = MagicMock()
-    accept_x_coords.values = coord_x
-
-    accept_y_coords = MagicMock()
-    accept_y_coords.values = coord_y
-
-    accept_coords = MagicMock()
-    accept_coords.__getitem__.side_effect = lambda key: accept_x_coords if key == 'x' else accept_y_coords if key == 'y' else None
-    accept_patch.coords = accept_coords 
-
-
-    # rejected patch 
-    reject_patch = MagicMock()
-
-    reject_x_central = MagicMock()
-    reject_y_central = MagicMock()
-    reject_x_central.values.mean.return_value = ds.input_dims['x']/2
-    reject_y_central.values.mean.return_value = ds.input_dims['y']/2
-    reject_patch.rio.crs.to_epsg.return_value = 4326
-    reject_patch.__getitem__.side_effect = lambda key: reject_x_central if key == 'x' else reject_y_central if key == 'y' else None
-
-    reject_array = MagicMock()
-    null_array_predict_predict = torch.zeros(num_channels, ds.input_dims['y'], ds.input_dims['x']).detach().cpu().numpy()
-    null_array_predict_non_predict = torch.zeros(num_channels+1, ds.input_dims['y'], ds.input_dims['x']).detach().cpu().numpy()
-    reject_array.values.squeeze.return_value = null_array_predict_predict if mode == 'predict' else null_array_predict_non_predict
-    reject_patch.to_array.return_value = reject_array
-
-    reject_x_coords = MagicMock()
-    reject_x_coords.values = coord_x
-
-    reject_y_coords = MagicMock()
-    reject_y_coords.values = coord_y
-    
-    reject_coords = MagicMock()
-    reject_coords.__getitem__.side_effect = lambda key: reject_x_coords if key == 'x' else reject_y_coords if key == 'y' else None
-    reject_patch.coords = reject_coords 
-     
-    # bad patch triggers Exception
-    bad_patch = MagicMock()
-    bad_patch.to_array.side_effect = Exception("Simulated patch error")
-   
-    # BatchGenerator yields: good patch first, then bad patch
-    mock_batchgen.return_value = [accept_patch, reject_patch, bad_patch]
-
-    # mock normalise
-    mock_normalize_instance = MagicMock()
-    mock_normalize_instance.side_effect = lambda x: x  # identity function
-    mock_normalize.return_value = mock_normalize_instance
-
-    # --- Act ---
-    outputs = next(iter(ds))
-
-    
-    # --- Assertions and test on different mode ---
-    
-    # test the returned outputs
-    assert isinstance(outputs, dict) 
+    output = next(iter(ds))
+    assert isinstance(output, dict) 
 
     # test the returned keys and types
-    assert "x" in outputs
-    assert "y" in outputs
-    assert "meta_info" in outputs
-    assert "wave_list" in outputs
-    assert "bandwidth" in outputs
-    assert "language_embed" in outputs
-    assert "input_mode" in outputs
-    assert "kernel_size" in outputs
-    assert isinstance(outputs["x"], torch.Tensor)
-    assert isinstance(outputs["y"], list)
+    assert "x" in output
+    assert "y" in output
+    assert "meta_info" in output
+    assert "wave_list" in output
+    assert "bandwidth" in output
+    assert "language_embed" in output
+    assert "input_mode" in output
+    assert "kernel_size" in output
+    assert isinstance(output["x"], torch.Tensor)
+    assert isinstance(output["y"], list) if mode=='predict' else isinstance(output["y"], torch.Tensor)
 
     # test the the filtered batch size
-    assert len(outputs["x"]) == 2 if mode == 'predict' and batch_size > 1 else 1  # filter patch in different modes
-    assert len(outputs["y"]) == 2 if mode == 'predict' and batch_size > 1 else 1  # filter patch in different modes
+    assert len(output["x"]) == 2 if mode == 'predict' and batch_size > 1 else 1  # filter patch in different modes
+    assert len(output["y"][0]) == 2 if mode == 'predict' and batch_size > 1 else 1  # filter patch in different modes
     
     # test the shape 
-    assert outputs["x"][0].size() == (num_channels, ds.input_dims['y'], ds.input_dims['x']) if mode == 'predict' else (num_channels-1, ds.input_dims['y'], ds.input_dims['x'])
-    assert len(outputs["y"][0]) == 3 if mode == 'predict' else True
-    assert outputs["y"][0].size() == (ds.input_dims['y'], ds.input_dims['x']) if mode != 'predict' else True
+    assert output["x"][0].size() == (num_channels, ds.input_dims['y'], ds.input_dims['x']) if mode == 'predict' else (num_channels-1, ds.input_dims['y'], ds.input_dims['x'])
+    assert len(output["y"]) == 3 if mode == 'predict' else output["y"][0].size() == (ds.input_dims['y'], ds.input_dims['x'])
+    assert output["y"][0].size() == (ds.input_dims['y'], ds.input_dims['x']) if mode != 'predict' else True
      
+# ----------------------------------------
+# CopernicusFMDataset
+# ----------------------------------------
+def create_test_zarr(path, n=3, c=4, h=8, w=8):
+    root = zarr.open(path, mode="w")
 
-# ================================= test data module =================================
+    root.create_array(
+        "images",
+        data=np.random.rand(n, c, h, w).astype(np.float32)
+    )
+    root.create_array(
+        "labels",
+        data=np.random.randint(0, 2, size=(n, h, w)).astype(np.int64)
+    )
+    root.create_array(
+        "meta_info",
+        data=np.random.rand(n, 4).astype(np.float32)
+    )
 
+    root.attrs["wavelist"] = list(range(c))
+    root.attrs["bandwidth"] = [10.0] * c
+    root.attrs["input_mode"] = "spectral"
+    root.attrs["kernel_size"] = None
+
+def test_len_multiple_zarrs(tmp_path):
+    zarr1 = tmp_path / "a.zarr"
+    zarr2 = tmp_path / "b.zarr"
+
+    create_test_zarr(zarr1, n=2)
+    create_test_zarr(zarr2, n=3)
+
+    ds = CopernicusFMDataset(str(tmp_path))
+
+    assert len(ds) == 5
+
+def test_getitem_returns_expected_dict(tmp_path):
+    zarr_path = tmp_path / "test.zarr"
+    create_test_zarr(zarr_path, n=1)
+
+    ds = CopernicusFMDataset(str(tmp_path))
+    sample = ds[0]
+
+    assert isinstance(sample, dict)
+
+    required_keys = {
+        "x", "y", "meta_info",
+        "wave_list", "bandwidth",
+        "language_embed", "input_mode", "kernel_size"
+    }
+    assert required_keys.issubset(sample.keys())
+
+    assert isinstance(sample["x"], torch.Tensor)
+    assert isinstance(sample["y"], torch.Tensor)
+    assert isinstance(sample["meta_info"], torch.Tensor)
+    assert isinstance(sample["wave_list"], torch.Tensor)
+    assert isinstance(sample["bandwidth"], torch.Tensor)
+
+    assert sample["x"].ndim == 3  # [C, H, W]
+    assert sample["y"].ndim == 2  # [H, W]
+    assert sample["meta_info"].shape == (4,)
+
+def test_kernel_size_default(tmp_path):
+    zarr_path = tmp_path / "test.zarr"
+    create_test_zarr(zarr_path, n=1)
+
+    ds = CopernicusFMDataset(str(tmp_path))
+    sample = ds[0]
+
+    assert sample["kernel_size"] == 16
+
+def test_transform_applied(tmp_path):
+    zarr_path = tmp_path / "test.zarr"
+    create_test_zarr(zarr_path, n=1)
+
+    def transform(x):
+        return x + 1
+
+    ds = CopernicusFMDataset(str(tmp_path), transform=transform)
+    sample = ds[0]
+
+    assert torch.all(sample["x"] >= 1)
+    assert torch.all(sample["y"] >= 1)
+
+def test_indexing_across_files(tmp_path):
+    create_test_zarr(tmp_path / "a.zarr", n=2)
+    create_test_zarr(tmp_path / "b.zarr", n=2)
+
+    ds = CopernicusFMDataset(str(tmp_path))
+
+    samples = [ds[i] for i in range(len(ds))]
+
+    assert len(samples) == 4
+    for s in samples:
+        assert "x" in s
+
+
+
+
+# ----------------------------------------
+# CopernicusFMIterableDataModule
+# ----------------------------------------
 # Sample metadata to mock yaml content
 META = {
     "kind1": { "input_mode": "spectral", 
@@ -245,7 +379,7 @@ META = {
 def datamodule():
     yaml_content = yaml.dump(META)
     with patch("builtins.open", mock_open(read_data=yaml_content)):
-        dm =  CopernicusFMDataModule(
+        dm =  CopernicusFMIterableDataModule(
             zarr_dirs=['./dummy_zarr_dir1/', './dummy_zarr_dir2/'],
             data_kinds=['S2_xz', 'DEM_yz'],
             metadata_path='./dummy_metadata.yaml',
@@ -253,7 +387,7 @@ def datamodule():
             input_overlap={'x': 16, 'y': 16},
             verify_fn='basic',
             augmentation=None,
-            batch_size_gen=2,
+            batch_size=2,
             num_workers=0,
             filter_thres=0.01,
         )
@@ -265,7 +399,7 @@ def test_copernicusfm_datamodule_init(mock_open_func):
     """Test datamodule initialization."""
     
     metadata_path = './dummy_metadata.yaml'
-    dm =  CopernicusFMDataModule(
+    dm =  CopernicusFMIterableDataModule(
         zarr_dirs=['./dummy_zarr_dir1/', './dummy_zarr_dir2/',],
         data_kinds=['S2_xz', 'DEM_yz'],
         metadata_path=metadata_path,
@@ -273,7 +407,7 @@ def test_copernicusfm_datamodule_init(mock_open_func):
         input_overlap={'x': 16, 'y': 16},
         verify_fn='basic',
         augmentation=None,
-        batch_size_gen=2,
+        batch_size=2,
         num_workers=0,
         filter_thres=0.01,
         )
@@ -287,7 +421,7 @@ def test_copernicusfm_datamodule_init(mock_open_func):
     assert isinstance(dm.input_overlap, dict) and dm.input_overlap == {'x': 16, 'y': 16}
     assert callable(dm.verify_fn) or dm.verify_fn == 'basic'
     assert callable(dm.augmentation) or dm.augmentation is None
-    assert isinstance(dm.batch_size_gen, int) and dm.batch_size_gen == 2
+    assert isinstance(dm.batch_size, int) and dm.batch_size == 2
     assert isinstance(dm.num_workers, int) and dm.num_workers == 0
     assert isinstance(dm.split_ratio, float) and dm.split_ratio == 0.8
     assert isinstance(dm.filter_thres, float) and dm.filter_thres == 0.01
@@ -303,9 +437,9 @@ def test_construct_samples(datamodule):
     assert list(samples['dummyZ'].keys()) == ['pixels_path', 'meta_info', 'language_embed', 'input_mode', 'kernel_size']
 
 @patch("modulargeofm.datamodules.copernicusfm_datamodule.train_test_split")
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMDataModule.construct_samples")
+@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMIterableDataModule.construct_samples")
 @patch("modulargeofm.datamodules.copernicusfm_datamodule.glob.glob")
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMDataset")
+@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMIterableDataset")
 @pytest.mark.parametrize("stage", ["fit", "test", "predict"])
 def test_setup_stages(mock_dataset, 
                       mock_glob, 
@@ -314,16 +448,18 @@ def test_setup_stages(mock_dataset,
                       stage, 
                       datamodule
                       ):
-    mock_dataset.return_value =  "CopernicusFM_Dataset"
+    mock_dataset.return_value =  "CopernicusFM_IterableDataset"
     mock_glob.return_value = MagicMock()
     mock_traintest_split.return_value = ('train_path', 'val_path', 'train_kind', 'val_kind')
     mock_construct_samples.return_value = MagicMock()
 
     datamodule.setup(stage=stage)
+    if stage=='fit': 
+        print('prin train ds', datamodule.train_ds)
 
     attrs = {"fit": ["train_ds", "val_ds"], "test": ["test_ds"], "predict": ["pred_ds"]}
     assert all(hasattr(datamodule, attr) for attr in attrs[stage]) 
-    assert all(getattr(datamodule, attr) == "CopernicusFM_Dataset" for attr in attrs[stage])  
+    assert all(getattr(datamodule, attr) == "CopernicusFM_IterableDataset" for attr in attrs[stage])  
 
 
 

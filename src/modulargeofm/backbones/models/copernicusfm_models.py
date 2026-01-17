@@ -113,7 +113,6 @@ class CopernicusMLP(nn.Module):
         else:
             raise ValueError(f"Encoder {encoder_name} is not handled yet")
         self.encoder = encoder_dict[encoder_name](**self.encoder_config)
-        self.freeze_encoder()
         self.decoder = SimpleMLPDecoder(embed_dims=[self.embed_dim for _ in self.encoder_config['intermediate_indices']],
                                         **self.decoder_config
                                         )

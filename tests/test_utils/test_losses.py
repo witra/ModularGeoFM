@@ -2,6 +2,7 @@ import pytest
 import torch
 from unittest.mock import patch, MagicMock
 from modulargeofm.utils.losses import tversky_loss, boundary_loss, boundary_iou_loss, CombinedSegLoss
+from modulargeofm.utils.shared import to_one_hot
 
 fakedata = [
     # pred, target, num_classes, min_expected, max_expected, desc
@@ -128,9 +129,8 @@ def test_tversky_index_shape_dtype(reduction):
     """Check output type and shape for different reductions."""
     B, H, W = 2, 4, 4
     pred = torch.randn(B, 1, H, W)
-    target = torch.randint(0, 2, (B, H, W))
+    target = to_one_hot(torch.randint(0, 2, (B, H, W)), num_classes=2)
     out = tversky_loss(pred, target, reduction=reduction)
-
     assert torch.is_tensor(out)
     assert out.dtype == torch.float32
     if reduction == "none":
@@ -142,7 +142,7 @@ def test_tversky_index_perfect_prediction():
     """Perfect match → Tversky ≈ 1."""
     B, H, W = 1, 4, 4
     pred = torch.ones(B, 1, H, W) * 10
-    target = torch.ones(B, H, W)
+    target = to_one_hot(torch.ones(B, H, W), num_classes=2)
     loss = tversky_loss(pred, target)
     assert torch.isclose(loss, torch.tensor(0.0), atol=1e-4)
 
@@ -150,7 +150,7 @@ def test_tversky_index_all_wrong():
     """Completely wrong prediction → low Tversky value."""
     B, H, W = 1, 4, 4
     pred = torch.ones(B, 1, H, W) * -10  
-    target = torch.ones(B, H, W)
+    target = to_one_hot(torch.ones(B, H, W), num_classes=2)
     loss = tversky_loss(pred, target)
     # All false negatives: TP=0, FP=0, FN=16
     expected = manual_tversky(TP=0, FP=0, FN=16)
@@ -165,6 +165,7 @@ def test_tversky_index_half_overlap():
     target = torch.zeros(B, H, W)
     target[:, :2, :] = 1  # top half positive (TP=8)
     target[:, 2:, :] = 1  # bottom half missed (FN=8)
+    target = to_one_hot(target, num_classes=2)
     expected = manual_tversky(8, 0, 8)
     loss = tversky_loss(pred, target)
     assert torch.isclose(loss, torch.tensor(expected), atol=1e-4)
@@ -173,7 +174,7 @@ def test_tversky_index_with_mask():
     """Masked areas should be ignored in calculation."""
     B, H, W = 1, 4, 4
     pred = torch.ones(B, 1, H, W) * 10
-    target = torch.ones(B, H, W)
+    target = to_one_hot(torch.ones(B, H, W), num_classes=2)
     mask = torch.zeros(B, H, W)
     loss = tversky_loss(pred, target, mask=mask)
     assert torch.isclose(loss, torch.tensor(1.0), atol=1e-4)
@@ -189,6 +190,7 @@ def test_tversky_index_multiclass_correctness():
     target[:, :, :2] = 0
     target[:, :, 2:4] = 1
     target[:, :, 4:] = 2
+    target = to_one_hot(target, num_classes=3)
     loss = tversky_loss(pred, target, num_classes=C, reduction="mean")
     assert loss <= 0.001  # expect high overlap
 
@@ -221,7 +223,7 @@ def test_boundary_loss_mock_numerical_correctness(mock_dist):
     p = torch.ones(B, C, H, W)  # after sigmoid
 
     # Target: foreground everywhere
-    target = torch.ones(B, H, W).long()
+    target = to_one_hot(torch.ones(B, H, W).long(), num_classes=2)
 
     # Manual math:
     # FG distances = 1, BG distances = 2 everywhere
@@ -256,7 +258,8 @@ def test_boundary_loss_mask_with_mock(mock_dist):
 
 @pytest.mark.parametrize('dataset', fakedata)
 def test_boundary_loss_with_actual_l1_distance_transform(dataset):
-    pred_logits,target,num_classes,min_expected,max_expected,desc = dataset
+    pred_logits, target, num_classes, min_expected, max_expected, desc = dataset
+    target = to_one_hot(target, num_classes)
     out = boundary_loss(pred_logits, target, num_classes=num_classes)
     assert out <= max_expected
 
@@ -264,6 +267,7 @@ def test_boundary_loss_with_actual_l1_distance_transform(dataset):
 def test_boundary_iou_large(dataset):
     """Tests boundary_iou on larger masks so morphological ops produce nonzero boundaries."""
     pred, target, num_classes, min_expected, max_expected, desc = dataset
+    target = to_one_hot(target, num_classes)
     mask = torch.tensor([[[
                 0,0,0,0,0,0,0,0,
                 0,0,0,0,0,0,0,0,
@@ -296,16 +300,16 @@ def test_boundary_iou_large(dataset):
 def test_combined_loss_weighted_sum(mock_bce, mock_tversky, mock_boundary, mock_onehot):
 
     loss_fn = CombinedSegLoss(
-        num_classes=1,
+        num_classes=2,
         ce_weight=0.4,
         tversky_weight=0.3,
         boundary_weight=0.3,
     )
 
     pred = torch.randn(1, 1, 1, 2)
-    target = torch.tensor([[0, 1]])
+    target = to_one_hot(torch.tensor([[0, 1]]), num_classes=2)
 
-    out = loss_fn(pred, target)
+    out, _, _, _ = loss_fn(pred, target)
 
     # Expected:
     #   ce = 10
@@ -320,7 +324,7 @@ def test_combined_loss_weighted_sum(mock_bce, mock_tversky, mock_boundary, mock_
 @patch("modulargeofm.utils.losses.boundary_iou_loss", return_value=torch.tensor(0.0))
 def test_combined_loss_mask_normalization(mock_boundary, mock_tversky, mock_onehot):
 
-    loss_fn = CombinedSegLoss(num_classes=1, ce_weight=1.0, tversky_weight=0.0, boundary_weight=0.0)
+    loss_fn = CombinedSegLoss(num_classes=2, ce_weight=1.0, tversky_weight=0.0, boundary_weight=0.0)
 
     # Force CE to output elementwise tensor so mask affects it
     def fake_bce(pred_logits, target_onehot, reduction='none'):
@@ -329,10 +333,10 @@ def test_combined_loss_mask_normalization(mock_boundary, mock_tversky, mock_oneh
     with patch("torch.nn.functional.binary_cross_entropy_with_logits", fake_bce):
 
         pred = torch.randn(1, 1, 1, 2)
-        target = torch.tensor([[0, 1]])
+        target = to_one_hot(torch.tensor([[0, 1]]), num_classes=2)
         mask = torch.tensor([[0.0, 1.0]])  # only second pixel is valid
 
-        out = loss_fn(pred, target, mask=mask)
+        out, _, _, _ = loss_fn(pred, target, mask=mask)
 
         # Expected masked CE:
         # numerator = 6.0
@@ -354,7 +358,7 @@ def test_combined_loss_multiclass_uses_cross_entropy(mock_boundary, mock_tversky
         pred = torch.randn(1, 3, 2, 2)
         target = torch.randint(0, 3, (1, 2, 2))
 
-        out = loss_fn(pred, target)
+        out, _, _, _ = loss_fn(pred, target)
 
         # reduction='mean' → mean of all 4 pixels → 5
         assert torch.isclose(out, torch.tensor(5.0), atol=1e-6)

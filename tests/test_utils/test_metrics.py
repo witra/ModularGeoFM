@@ -1,7 +1,7 @@
 import pytest
 import torch
-import pytest
 from modulargeofm.utils.metrics import tversky_index, dice_coefficient, boundary_iou, SegmentationMetrics
+from modulargeofm.utils.shared import to_one_hot
 
 ## --- Helper for expected Tversky calculation (manual reference) ---
 def manual_tversky(TP, FP, FN, alpha=0.7, beta=0.3, eps=1e-6):
@@ -77,6 +77,7 @@ def test_tversky_index_multiclass_correctness():
     pred[:, 1, :, 2:] = 10
     target = torch.zeros(B, H, W, dtype=torch.long)
     target[:, :, 2:] = 1
+    target = to_one_hot(target, num_classes=C)
     score = tversky_index(pred, target, num_classes=C, reduction="mean")
     assert 0.8 <= score <= 1.0  # expect high overlap
 
@@ -84,12 +85,12 @@ def test_dice_correctness_and_equivalence():
     B, H, W = 1, 4, 4
     # Perfect match → 1.0
     pred = torch.ones(B, 1, H, W) * 10
-    target = torch.ones(B, H, W)
+    target = to_one_hot(torch.ones(B, H, W), num_classes=2)
     assert torch.isclose(dice_coefficient(pred, target), torch.tensor(1.0), atol=1e-4)
 
     # Half overlap: TP=8, FP=0, FN=8 → Dice = 16/(16+8)=0.6667
     pred = torch.zeros(B, 1, H, W); pred[:, :, :2, :] = 10
-    target = torch.ones(B, H, W)
+    # target = torch.ones(B, H, W)
     dice = dice_coefficient(pred, target)
     tversky_half = tversky_index(pred, target, alpha=0.5, beta=0.5)
     assert torch.isclose(dice, torch.tensor(0.6667), atol=1e-3)
@@ -97,7 +98,7 @@ def test_dice_correctness_and_equivalence():
 
     # All wrong → 0.0
     pred = torch.ones(B, 1, H, W) * -10
-    target = torch.ones(B, H, W)
+    # target = torch.ones(B, H, W)
     assert torch.isclose(dice_coefficient(pred, target), torch.tensor(0.0), atol=1e-4)
 
 
@@ -105,7 +106,9 @@ def test_dice_multiclass_behavior():
     B, C, H, W = 1, 3, 4, 4
     pred = torch.zeros(B, C, H, W)
     pred[:, 0, :, :2] = 10; pred[:, 1, :, 2:] = 10
-    target = torch.zeros(B, H, W, dtype=torch.long); target[:, :, 2:] = 1
+    target = torch.zeros(B, H, W, dtype=torch.long)
+    target[:, :, 2:] = 1
+    target = to_one_hot(target, num_classes=C)
     score = dice_coefficient(pred, target, num_classes=C)
     assert 0.8 <= score <= 1.0
 
@@ -230,6 +233,7 @@ def test_dice_multiclass_behavior():
 )
 def test_boundary_iou_large(pred, target, num_classes, min_expected, max_expected, desc):
     """Tests boundary_iou on larger masks so morphological ops produce nonzero boundaries."""
+    target = to_one_hot(target, num_classes=num_classes)
     mask = torch.tensor([[[
                 0,0,0,0,0,0,0,0,
                 0,0,0,0,0,0,0,0,
@@ -254,7 +258,7 @@ def test_boundary_iou_large(pred, target, num_classes, min_expected, max_expecte
     assert min_expected * pred.shape[1] <= value_sum.item() <= max_expected * pred.shape[1], f"{desc}: got {value_sum.item():.3f}"
     assert value_mask.item() == 0.0, f"{desc}: got {value_mask.item():.3f}"
 
-@pytest.mark.parametrize("num_classes", [1, 3])
+@pytest.mark.parametrize("num_classes", [2, 3])
 def test_segmentation_metrics_basic(num_classes):
     batch_size = 2
     height = 4
@@ -262,10 +266,11 @@ def test_segmentation_metrics_basic(num_classes):
 
     # Random logits and integer targets
     logits = torch.rand(batch_size, num_classes, height, width)
-    if num_classes == 1:
-        targets = torch.randint(0, 2, (batch_size, height, width))
+    if num_classes == 2:
+        target = torch.randint(0, 2, (batch_size, height, width))
     else:
-        targets = torch.randint(0, num_classes, (batch_size, height, width))
+        target = torch.randint(0, num_classes, (batch_size, height, width))
+    target = to_one_hot(target, num_classes=num_classes)
 
     # Optional mask (test masked case)
     mask = torch.randint(0, 2, (batch_size, height, width))
@@ -273,7 +278,7 @@ def test_segmentation_metrics_basic(num_classes):
     metric = SegmentationMetrics(num_classes=num_classes)
 
     # --- update with first batch ---
-    metric.update(logits, targets, mask=mask)
+    metric.update(logits, target, mask=mask)
 
     # Compute metrics
     out = metric.compute()
@@ -286,7 +291,7 @@ def test_segmentation_metrics_basic(num_classes):
         assert v.dim() == 0  # scalar
 
     # --- update with second batch ---
-    metric.update(logits, targets, mask=mask)
+    metric.update(logits, target, mask=mask)
     out2 = metric.compute()
     # Values should have changed (accumulated)
     for k in out.keys():

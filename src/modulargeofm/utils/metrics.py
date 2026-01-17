@@ -10,8 +10,8 @@ def tversky_index(pred_logits, target, mask=None, num_classes=1, reduction='mean
     ----------
     pred_logits : torch.Tensor
         Logits output from the model, shape [B, C, H, W] for multiclass or [B, 1, H, W] for binary.
-    target : torch.Tensor
-        Ground truth labels, shape [B, H, W].
+    target : torch.Tensor 
+        Ground truth labels, one-hot code [B, 1, H, W].
     mask : torch.Tensor, optional
         Optional mask to select regions for metric computation, shape [B, H, W] or [B, 1, H, W].
     num_classes : int, default=1
@@ -35,7 +35,6 @@ def tversky_index(pred_logits, target, mask=None, num_classes=1, reduction='mean
     """
     p = torch.sigmoid(pred_logits) if num_classes == 1 else torch.softmax(pred_logits, dim=1)
     p = (p > 0.5).float()
-    target = to_one_hot(target, num_classes)
 
     if mask is not None and mask.ndim < target.ndim:
         mask = mask.unsqueeze(1)  # [B,1,H,W]
@@ -71,7 +70,7 @@ def dice_coefficient(pred_logits, target, num_classes=1, reduction='mean', eps=1
     ----------
     pred_logits : torch.Tensor
         Logits output from the model.
-    target : torch.Tensor
+    target : torch.Tensor 
         Ground truth labels.
     num_classes : int, default=1
         Number of classes.
@@ -98,7 +97,7 @@ def boundary_iou(pred_logits, target, mask=None, num_classes=1, kernel_size=3, r
     ----------
     pred_logits : torch.Tensor
         Logits from the model, shape [B, C, H, W] for multiclass or [B, 1, H, W] for binary.
-    target : torch.Tensor
+    target : torch.Tensor 
         Ground truth labels, shape [B, H, W].
     mask : torch.Tensor, optional
         Optional mask to select regions for boundary IoU computation, shape [B, H, W] or [B,1,H,W].
@@ -121,7 +120,6 @@ def boundary_iou(pred_logits, target, mask=None, num_classes=1, kernel_size=3, r
     """
     p = torch.sigmoid(pred_logits) if num_classes == 1 else torch.softmax(pred_logits, dim=1)
     p = (p > 0.5).float()
-    target = to_one_hot(target, num_classes).float()
     
     pred_boundary = boundary_map(p, kernel_size=kernel_size)
     target_boundary = boundary_map(target, kernel_size=kernel_size)
