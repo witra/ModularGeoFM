@@ -314,6 +314,7 @@ def test_getitem_returns_expected_dict(tmp_path):
     assert isinstance(sample["meta_info"], torch.Tensor)
     assert isinstance(sample["wave_list"], torch.Tensor)
     assert isinstance(sample["bandwidth"], torch.Tensor)
+    assert isinstance(sample["kernel_size"], int)
 
     assert sample["x"].ndim == 3  # [C, H, W]
     assert sample["y"].ndim == 2  # [H, W]
