@@ -223,7 +223,7 @@ class CopernicusFMIterableDataset(IterableDataset):
             bandnames = modality.get('bandnames', None)
             language_embed = modality.get('language_embed', None)
             input_mode = modality.get('input_mode')
-            kernel_size = torch.tensor(modality['kernel_size']) if modality.get('kernel_size') is not None else None
+            kernel_size = torch.tensor(modality['kernel_size']) if modality.get('kernel_size') is not None else 16 # folllow the default from copernicusfm
             self.normalise = Normalize(mean=mean, std=std)
 
             if self.mode == 'predict':
@@ -292,12 +292,12 @@ class CopernicusFMIterableDataset(IterableDataset):
                         continue
                     xcenter_batch_tensor = xcenter_batch_tensor[valid_mask]
                     ycenter_batch_tensor = ycenter_batch_tensor[valid_mask]
-                    time_tensor = torch.full((batch_tensor.shape[0],), torch.nan) #TODO: later, consider time
-                    area_tensor = torch.full((batch_tensor.shape[0],), area)
                     batch_y = batch_tensor[:, 0,  :, :] # label
                 else:
                     batch_y = [ycoord_batch, xcoord_batch, spatial_ref_batch]
 
+                area_tensor = torch.full((batch_tensor.shape[0],), area)
+                time_tensor = torch.full((batch_tensor.shape[0],), torch.nan) #TODO: later, consider time
                 meta_info = torch.stack([xcenter_batch_tensor, ycenter_batch_tensor, time_tensor, area_tensor], dim=1)
                 batch_x = batch_tensor[:, 1:, :, :] # input data
                 batch_x = self.normalise(batch_x).clamp(min=-1.0, max=1.0)
@@ -326,7 +326,6 @@ class CopernicusFMDataset(Dataset):
         return len(self.index)
     
     def __getitem__(self, idx):
-        # print('index get ite', idx)
         path_id, i = self.index[idx]
         z = zarr.open(self.zarr_paths[path_id], mode='r')
         image = torch.from_numpy(z['images'][i])
@@ -335,21 +334,21 @@ class CopernicusFMDataset(Dataset):
         attrs = z.attrs
         wavelist = torch.tensor(attrs['wavelist'])
         bandwidth = torch.tensor(attrs['bandwidth'])
-        language_embed= [None] #if attrs['language_embed'] == None else attrs['language_embed'] #TODO rework for this variable
+        # language_embed= [None] #if attrs['language_embed'] == None else attrs['language_embed'] #TODO rework for this variable
         input_mode = attrs['input_mode']
-        kernel_size = [None] #attrs['kernel_size']
+        kernel_size = attrs['kernel_size'] if attrs['kernel_size'] is not None else 16 # folllow the default from copernicusfm
         if self.transform:
             image = self.transform(image)
             label = self.transform(label)
 
         return dict(x=image, 
                     y=label, 
-                    meta_info=meta_info, # [B, 4]
+                    meta_info=meta_info, # [4]
                     wave_list=wavelist, # [C]
                     bandwidth=bandwidth, # [C]
                     language_embed="None",
                     input_mode=input_mode, 
-                    # kernel_size=kernel_size
+                    kernel_size=kernel_size # [B]
                     )
 
         
