@@ -5,6 +5,7 @@ import yaml
 import types
 import numpy as np
 import xarray as xr
+import zarr
 from unittest.mock import MagicMock, patch, mock_open
 from box import Box
 from modulargeofm.datamodules.copernicusfm_datamodule import CopernicusFMIterableDataset, CopernicusFMDataset, CopernicusFMIterableDataModule 
@@ -260,6 +261,99 @@ def test_iter_yields_valid_batches(monkeypatch, ds):
 # ----------------------------------------
 # CopernicusFMDataset
 # ----------------------------------------
+def create_test_zarr(path, n=3, c=4, h=8, w=8):
+    root = zarr.open(path, mode="w")
+
+    root.create_array(
+        "images",
+        data=np.random.rand(n, c, h, w).astype(np.float32)
+    )
+    root.create_array(
+        "labels",
+        data=np.random.randint(0, 2, size=(n, h, w)).astype(np.int64)
+    )
+    root.create_array(
+        "meta_info",
+        data=np.random.rand(n, 4).astype(np.float32)
+    )
+
+    root.attrs["wavelist"] = list(range(c))
+    root.attrs["bandwidth"] = [10.0] * c
+    root.attrs["input_mode"] = "spectral"
+    root.attrs["kernel_size"] = None
+
+def test_len_multiple_zarrs(tmp_path):
+    zarr1 = tmp_path / "a.zarr"
+    zarr2 = tmp_path / "b.zarr"
+
+    create_test_zarr(zarr1, n=2)
+    create_test_zarr(zarr2, n=3)
+
+    ds = CopernicusFMDataset(str(tmp_path))
+
+    assert len(ds) == 5
+
+def test_getitem_returns_expected_dict(tmp_path):
+    zarr_path = tmp_path / "test.zarr"
+    create_test_zarr(zarr_path, n=1)
+
+    ds = CopernicusFMDataset(str(tmp_path))
+    sample = ds[0]
+
+    assert isinstance(sample, dict)
+
+    required_keys = {
+        "x", "y", "meta_info",
+        "wave_list", "bandwidth",
+        "language_embed", "input_mode", "kernel_size"
+    }
+    assert required_keys.issubset(sample.keys())
+
+    assert isinstance(sample["x"], torch.Tensor)
+    assert isinstance(sample["y"], torch.Tensor)
+    assert isinstance(sample["meta_info"], torch.Tensor)
+    assert isinstance(sample["wave_list"], torch.Tensor)
+    assert isinstance(sample["bandwidth"], torch.Tensor)
+
+    assert sample["x"].ndim == 3  # [C, H, W]
+    assert sample["y"].ndim == 2  # [H, W]
+    assert sample["meta_info"].shape == (4,)
+
+def test_kernel_size_default(tmp_path):
+    zarr_path = tmp_path / "test.zarr"
+    create_test_zarr(zarr_path, n=1)
+
+    ds = CopernicusFMDataset(str(tmp_path))
+    sample = ds[0]
+
+    assert sample["kernel_size"] == 16
+
+def test_transform_applied(tmp_path):
+    zarr_path = tmp_path / "test.zarr"
+    create_test_zarr(zarr_path, n=1)
+
+    def transform(x):
+        return x + 1
+
+    ds = CopernicusFMDataset(str(tmp_path), transform=transform)
+    sample = ds[0]
+
+    assert torch.all(sample["x"] >= 1)
+    assert torch.all(sample["y"] >= 1)
+
+def test_indexing_across_files(tmp_path):
+    create_test_zarr(tmp_path / "a.zarr", n=2)
+    create_test_zarr(tmp_path / "b.zarr", n=2)
+
+    ds = CopernicusFMDataset(str(tmp_path))
+
+    samples = [ds[i] for i in range(len(ds))]
+
+    assert len(samples) == 4
+    for s in samples:
+        assert "x" in s
+
+
 
 
 # ----------------------------------------
