@@ -13,3 +13,10 @@ Archive.zip
 .venv
 *.zip
 .coverage
+*.xml
+*.png
+tutorials/02_Evaluation_Satellite_Data_Pipeline/gpu_util_class_usage.csv
+tutorials/02_Evaluation_Satellite_Data_Pipeline/gpuutil_phase_stats.csv
+tutorials/02_Evaluation_Satellite_Data_Pipeline/mem_util_class_usage.csv
+tutorials/02_Evaluation_Satellite_Data_Pipeline/phase runtime.csv
+tutorials/02_Evaluation_Satellite_Data_Pipeline/memutil_phase_stats.csv
