@@ -65,7 +65,7 @@ class CopernicusMLPModule(L.LightningModule):
         y_hat = batch["y"] #torch.stack(batch["y"], dim=0).to(self.device)
         batch['wave_list'] = batch['wave_list'][0] if batch['wave_list'].ndim > 1 else batch['wave_list']
         batch['bandwidth'] = batch['bandwidth'][0] if batch['bandwidth'].ndim > 1 else batch['bandwidth']
-        batch['kernel_size'] = batch['kernel_size'][0].item() if batch['kernel_size'].shape[0] > 1 else batch['kernel_size']
+        batch['kernel_size'] = batch['kernel_size'] if isinstance(batch['kernel_size'], int) else batch['kernel_size'][0].item() 
         batch['input_mode'] = batch['input_mode'][0] if isinstance( batch['input_mode'], list) else batch['input_mode']
         batch.pop('y')
         if self.yhat_post_fn: # adjust y_hat size according to task type e.g., binary segmentation
