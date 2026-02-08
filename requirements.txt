@@ -21,3 +21,4 @@
     contextily
     zarr
     git+https://github.com/IBM/terratorch.git#egg=terratorch
+    git+https://github.com/Clay-foundation/model.git
