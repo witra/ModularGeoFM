@@ -16,7 +16,7 @@ from kornia.augmentation import Normalize
 from sklearn.model_selection import train_test_split
 from torch.utils.data import (DataLoader, Dataset, IterableDataset,
                               get_worker_info)
-from xbatcher import BatchGenerator
+from modulargeofm.datamodules.shared import create_batch_generator, filter_x, filter_y
 
 
 class CopernicusFMIterableDataset(IterableDataset):
@@ -108,71 +108,19 @@ class CopernicusFMIterableDataset(IterableDataset):
         self.filter_thres = filter_thres
 
         if verify_x_fn == 'default':
-            self.verify_x_fn = partial(self.filter_x, threshold=self.filter_thres)
+            self.verify_x_fn = partial(filter_x, threshold=self.filter_thres)
         elif callable(verify_x_fn):
             self.verify_x_fn = verify_x_fn # TODO: further rework on custom function
         else:
             raise ValueError(f"Invalid verify_fn: {verify_x_fn}")
         
         if verify_y_fn == 'default':
-            self.verify_y_fn = partial(self.filter_y)
+            self.verify_y_fn = partial(filter_y)
         elif callable(verify_y_fn):
             self.verify_y_fn = verify_y_fn # TODO: further rework on custom function
         else:
             raise ValueError(f"Invalid verify_fn: {verify_y_fn}")
 
-
-    def create_batch_generator(self, subset):
-        """
-        Create a batch generator from an xarray subset. 
-        
-        Parameters 
-        ---------- 
-        subset : xarray.Dataset 
-            The dataset subset representing a specific temporal slice. 
-        
-        Returns 
-        ------- 
-        xbatcher.BatchGenerator 
-            Iterator yielding patches of the dataset subset.
-        """
-        return BatchGenerator(
-            subset,
-            input_dims=self.input_dims,
-            input_overlap=self.input_overlap,
-            )
-
-    def filter_y(self, batch_patches:torch.tensor):
-        """ 
-        Filtering function for rejecting invalid label patches. At least there is 2 classes.
-        """
-        batch_size = batch_patches.shape[0]
-        patches_flat = batch_patches.view(batch_size, -1)
-        has_multiple_labels = torch.any(patches_flat != patches_flat[:, :1], dim=1)
-        return has_multiple_labels
-
-    def filter_x(self, batch_patches:torch.tensor, threshold=0.05):
-        """ 
-        Basic filtering function for rejecting invalid patches. 
-        
-        Checks if the fraction of zeros or NaN values in the input tensor exceeds a defined threshold. 
-        
-        Parameters 
-        ---------- 
-            patch : torch.Tensor Input patch tensor. 
-            threshold : float, default=0.05 Maximum allowed fraction of invalid elements. 
-        
-        Returns 
-        ------- 
-        bool 
-            ``True`` if patch is valid, ``False`` otherwise. 
-        """
-        batch_size = batch_patches.shape[0]
-        patches_flat = batch_patches.view(batch_size, -1)
-        invalid_mask = (patches_flat == 0) | torch.isnan(patches_flat)
-        invalid_fraction = invalid_mask.sum(dim=1).float() / patches_flat.shape[1]
-        valid_mask = (invalid_fraction < threshold).to(torch.int)
-        return valid_mask.bool()
 
     def __iter__(self):
         """ 
@@ -240,7 +188,7 @@ class CopernicusFMIterableDataset(IterableDataset):
             area = torch.tensor(area)  
 
             # batch generator
-            batch_gen = iter(self.create_batch_generator(subset))
+            batch_gen = iter(create_batch_generator(subset, self.input_dims, self.input_overlap))
 
             for batch in batched(batch_gen, self.batch_size):
                 batch_tensor = []
@@ -527,44 +475,44 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
             train_samples = self.construct_samples(train_path, train_kind)
             val_samples = self.construct_samples(val_path, val_kind)
             self.train_ds = CopernicusFMIterableDataset(train_samples,
-                                                input_dims=self.input_dims,
-                                                input_overlap=self.input_overlap,
-                                                mode="train",
-                                                verify_x_fn=self.verify_fn,
-                                                batch_size=self.batch_size,
-                                                augmentation=self.augmentation,
-                                                filter_thres=self.filter_thres
-                                                )
+                                                        input_dims=self.input_dims,
+                                                        input_overlap=self.input_overlap,
+                                                        mode="train",
+                                                        verify_x_fn=self.verify_fn,
+                                                        batch_size=self.batch_size,
+                                                        augmentation=self.augmentation,
+                                                        filter_thres=self.filter_thres
+                                                        )
             self.val_ds = CopernicusFMIterableDataset(val_samples,
-                                                input_dims=self.input_dims,
-                                                input_overlap=self.input_overlap,
-                                                mode="val",
-                                                verify_x_fn=self.verify_fn,
-                                                batch_size=self.batch_size,
-                                                filter_thres=self.filter_thres
-                                                )
+                                                      input_dims=self.input_dims,
+                                                      input_overlap=self.input_overlap,
+                                                      mode="val",
+                                                      verify_x_fn=self.verify_fn,
+                                                      batch_size=self.batch_size,
+                                                      filter_thres=self.filter_thres
+                                                      )
 
         if stage == "test":
             test_samples = self.construct_samples(zarr_pathss, path_kindss)
             self.test_ds = CopernicusFMIterableDataset(test_samples,
-                                               input_dims=self.input_dims,
-                                               input_overlap=self.input_overlap,
-                                               mode="test",
-                                               verify_x_fn=self.verify_fn,
-                                               batch_size=self.batch_size,
-                                               filter_thres=self.filter_thres
-                                               )
+                                                       input_dims=self.input_dims,
+                                                       input_overlap=self.input_overlap,
+                                                       mode="test",
+                                                       verify_x_fn=self.verify_fn,
+                                                       batch_size=self.batch_size,
+                                                       filter_thres=self.filter_thres
+                                                       )
 
         if stage == "predict":
             pred_samples = self.construct_samples(zarr_pathss, path_kindss)
             self.pred_ds = CopernicusFMIterableDataset(pred_samples,
-                                                input_dims=self.input_dims,
-                                                input_overlap=self.input_overlap,
-                                                verify_x_fn=self.verify_fn,
-                                                mode="predict",
-                                                batch_size=self.batch_size,
-                                                filter_thres=self.filter_thres
-                                                )
+                                                       input_dims=self.input_dims,
+                                                       input_overlap=self.input_overlap,
+                                                       verify_x_fn=self.verify_fn,
+                                                       mode="predict",
+                                                       batch_size=self.batch_size,
+                                                       filter_thres=self.filter_thres
+                                                       )
 
     def train_dataloader(self):
         """Return PyTorch DataLoader for training data."""
