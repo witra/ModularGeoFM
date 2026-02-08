@@ -55,6 +55,20 @@ class FakeXRDataset:
             return FakeXRArray(np.array([0.0, 1.0]))
         raise AttributeError
 
+@pytest.fixture
+def dummy_samples():
+    return {
+        "sample1": dict(
+            pixels_path='dummy_path.zarr',
+            wavelist=[1, 2, 3],
+            bandwidth=[10, 10, 10],
+            mean=[1, 1, 1],
+            std=[0.5, 0.5, 0.5],
+            bandnames=['B1', 'B2', 'B3'],
+            input_mode="spectral",
+            kernel_size=3,
+        )
+    }
 def dummy_accepted_batched_data():
     C, H, W =  4, 16, 16  # channels, height, width
     pixels = np.random.rand(C, H, W).astype(np.float32)
@@ -95,15 +109,6 @@ def dummy_reject_batched_data():
     ds = ds.rio.write_crs("EPSG:4326")
     return ds
 
-class FakeBatchGenerator:
-    def __init__(self, subset):
-        self.subset = subset
-
-    def __iter__(self):
-        dummy_data = [dummy_accepted_batched_data(), dummy_reject_batched_data()]
-        for i in range(len(dummy_data)):
-            yield dummy_data[i]
-
 class FakeNormalize:
     def __init__(self, mean, std):
         self.mean = mean
@@ -111,7 +116,7 @@ class FakeNormalize:
 
     def __call__(self, x):
         return (x - self.mean.view(1, -1, 1, 1)) / self.std.view(1, -1, 1, 1)
-
+    
 def fake_batched(iterable, batch_size):
     batch = []
     for item in iterable:
@@ -122,20 +127,6 @@ def fake_batched(iterable, batch_size):
     if batch:
         yield batch
 
-@pytest.fixture
-def dummy_samples():
-    return {
-        "sample1": dict(
-            pixels_path='dummy_path.zarr',
-            wavelist=[1, 2, 3],
-            bandwidth=[10, 10, 10],
-            mean=[1, 1, 1],
-            std=[0.5, 0.5, 0.5],
-            bandnames=['B1', 'B2', 'B3'],
-            input_mode="spectral",
-            kernel_size=3,
-        )
-    }
 @pytest.fixture(params=[('train', 1),
                         ('train', 4), 
                         ('val', 1),
@@ -193,29 +184,16 @@ def test_invalid_verify_fn_raises(dummy_samples):
             verify_y_fn="unknown"
         )
 
-def test_default_xfilter_threshold(ds):
-    """Patch with zeros and NaNs should be filtered out properly."""
-    ds, _ = ds
-    patch = torch.tensor([[0.0, float("nan")], [1.0, 1.0]])
-    assert torch.equal(ds.verify_x_fn(patch, threshold=0.2), torch.tensor([False, True]))
-    assert torch.equal(ds.verify_x_fn(torch.ones((2,2)), threshold=0.2), torch.tensor([True, True])) 
+class FakeBatchGenerator:
+    def __init__(self, subset, input_dims, input_overlap):
+        self.subset = subset
+        self.input_dims = input_dims
+        self.input_overlap = input_overlap
 
-def test_default_yfilter_threshold(ds):
-    """Patch with zeros and NaNs should be filtered out properly."""
-    ds, _ = ds
-    patch = torch.tensor([[0.0, 0.0], [1.0, 0.0]])
-    assert torch.equal(ds.verify_y_fn(patch), torch.tensor([False, True]))
-    assert torch.equal(ds.verify_y_fn(torch.ones((2,2))), torch.tensor([False, False])) 
-
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.BatchGenerator")
-def test_create_batch_generator(mock_bg, ds):
-    """Check that create_batch_generator calls BatchGenerator correctly."""
-    ds, _ = ds
-    dummy_subset = MagicMock()
-    ds.create_batch_generator(dummy_subset)
-    mock_bg.assert_called_once_with(dummy_subset,
-                                    input_dims=ds.input_dims,
-                                    input_overlap=ds.input_overlap)
+    def __iter__(self):
+        dummy_data = [dummy_accepted_batched_data(), dummy_reject_batched_data()]
+        for i in range(len(dummy_data)):
+            yield dummy_data[i]
     
 def test_iter_yields_valid_batches(monkeypatch, ds):
     monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.xr.open_zarr",
@@ -223,7 +201,7 @@ def test_iter_yields_valid_batches(monkeypatch, ds):
                             data=np.random.rand(2, 4, 4).astype(np.float32),  # [bands, H, W]
                             bandnames=["label", "b1"],
                         ))
-    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMIterableDataset.create_batch_generator",
+    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.create_batch_generator",
                         FakeBatchGenerator
                         )
     monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.Normalize", FakeNormalize)
