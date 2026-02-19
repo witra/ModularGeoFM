@@ -3,6 +3,7 @@ exploration/
 .idea
 weights/
 *__pycache__/
+.archive
 .DS_Store
 .vscode
 .ipynb_checkpoints
