@@ -59,7 +59,8 @@ class ClayIterableDataset(IterableDataset):
                  verify_y_fn='default',
                  batch_size=1,
                  time_dim='time',
-                 filter_thres=0.05,
+                 filter_x_thres=0.05,
+                 filter_y_thres=0.05  
             
     ) -> None:
         super().__init__()
@@ -72,17 +73,18 @@ class ClayIterableDataset(IterableDataset):
         self.verify_y_fn = verify_y_fn
         self.batch_size = batch_size
         self.time_dim = time_dim
-        self.filter_thres = filter_thres
+        self.filter_x_thres = filter_x_thres
+        self.filter_y_thres = filter_y_thres
 
         if verify_x_fn == 'default':
-            self.verify_x_fn = partial(filter_x, threshold=self.filter_thres)
+            self.verify_x_fn = partial(filter_x, threshold=self.filter_x_thres)
         elif callable(verify_x_fn):
             self.verify_x_fn = verify_x_fn
         else:
             raise ValueError("veriffy_x_fn should be 'default' or callable function")
         
         if verify_y_fn == 'default':
-            self.verify_y_fn = partial(filter_y)
+            self.verify_y_fn = partial(filter_y, threshold=self.filter_y_thres)
         elif callable(verify_y_fn):
             self.verify_y_fn = verify_y_fn
         else:
@@ -221,9 +223,10 @@ class ClayIterableDataset(IterableDataset):
                             )
                 
 class ClayDataset(Dataset):
-    def __init__(self, chip_zarr_dir, transform=None):
+    def __init__(self, chip_zarr_dir, augment=None, num_augment=1):
         self.chip_zarr_dir = chip_zarr_dir
-        self.transform = transform
+        self.augment = augment
+        self.num_augment = num_augment
         self.index = []
         self.zarr_paths = glob.glob(f"{self.chip_zarr_dir}/*.zarr")
         for path_id, zarr_path in enumerate(self.zarr_paths):
@@ -231,12 +234,16 @@ class ClayDataset(Dataset):
             n = z['pixels'].shape[0]
             self.index.extend([(path_id, i) for i in range(n)])    
     def __len__(self):
-        return len(self.index)
+        if self.augment:
+            return len(self.index) * self.num_augment
+        else:
+            return len(self.index)
     
     def __getitem__(self, idx):
+        idx = idx // self.num_augment  if self.augment else idx
         path_id, i = self.index[idx]
         z = zarr.open(self.zarr_paths[path_id], mode='r')
-        pixels = torch.from_numpy(z['pixels'][i])
+        pixel = torch.from_numpy(z['pixels'][i])
         label = torch.from_numpy(z['labels'][i])
         time = torch.from_numpy(z['time'][i])
         latlon = torch.from_numpy(z['latlon'][i])
@@ -244,10 +251,14 @@ class ClayDataset(Dataset):
         attrs = z.attrs
         waves = torch.tensor(attrs['waves'])
         gsd = torch.tensor(attrs['gsd'])
-        if self.transform:
-            pixels = self.transform(pixels)
-            label = self.transform(label)
-        return dict(pixels=pixels,  # [B C H W]
+        if self.augment:
+            for _ in range(self.num_augment):
+                pixel = pixel.unsqueeze(0)
+                label = label.unsqueeze(0)
+                pixel, label = self.augment(pixel, label)
+                pixel = pixel.squeeze(0)
+                label = label.squeeze(0)
+        return dict(pixels=pixel,  # [B C H W]
                     y=label,  # [B, H, W]
                     time=time, # [B 4]
                     latlon=latlon,  # [B 4]
@@ -340,7 +351,8 @@ class ClayIterableDataModule(L.LightningDataModule):
                  num_workers: int=4,
                  prefetch_factor: int = 8,
                  split_ratio: float=0.8,
-                 filter_thres: float=0.05,
+                 filter_x_thres: float=0.05,
+                 filter_y_thres: float=0.05,    
                  random_state: int=46):
         super().__init__()
         self.zarr_dirs = zarr_dirs
@@ -354,7 +366,8 @@ class ClayIterableDataModule(L.LightningDataModule):
         self.num_workers = num_workers
         self.prefetch_factor = prefetch_factor
         self.split_ratio = split_ratio
-        self.filter_thres = filter_thres
+        self.filter_x_thres = filter_x_thres
+        self.filter_y_thres = filter_y_thres
         self.random_state = random_state
 
     def construct_samples(self, zarr_paths, kinds):
@@ -424,7 +437,8 @@ class ClayIterableDataModule(L.LightningDataModule):
                                                 verify_x_fn=self.verify_fn,
                                                 batch_size=self.batch_size,
                                                 augmentation=self.augmentation,
-                                                filter_thres=self.filter_thres
+                                                filter_x_thres=self.filter_x_thres,
+                                                filter_y_thres=self.filter_y_thres  
                                                 )
             self.val_ds = ClayIterableDataset(val_samples,
                                               input_dims=self.input_dims,
@@ -432,7 +446,8 @@ class ClayIterableDataModule(L.LightningDataModule):
                                               mode="val",
                                               verify_x_fn=self.verify_fn,
                                               batch_size=self.batch_size,
-                                              filter_thres=self.filter_thres
+                                              filter_x_thres=self.filter_x_thres,
+                                              filter_y_thres=self.filter_y_thres
                                              )
 
         if stage == "test":
@@ -443,7 +458,8 @@ class ClayIterableDataModule(L.LightningDataModule):
                                                mode="test",
                                                verify_x_fn=self.verify_fn,
                                                batch_size=self.batch_size,
-                                               filter_thres=self.filter_thres
+                                               filter_x_thres=self.filter_x_thres,
+                                               filter_y_thres=self.filter_y_thres
                                                )
 
         if stage == "predict":
@@ -454,7 +470,8 @@ class ClayIterableDataModule(L.LightningDataModule):
                                                 verify_x_fn=self.verify_fn,
                                                 mode="predict",
                                                 batch_size=self.batch_size,
-                                                filter_thres=self.filter_thres
+                                                filter_x_thres=self.filter_x_thres,
+                                                filter_y_thres=self.filter_y_thres
                                                 )
 
     def train_dataloader(self):
