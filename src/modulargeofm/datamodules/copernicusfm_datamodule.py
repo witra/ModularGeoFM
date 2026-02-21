@@ -95,7 +95,8 @@ class CopernicusFMIterableDataset(IterableDataset):
                  verify_y_fn ='default',
                  batch_size=1,
                  time_dim='time',
-                 filter_thres=0.05
+                 filter_x_thres=0.05,
+                 filter_y_thres=0.05
                  ) -> None:
 
         self.samples = samples
@@ -105,17 +106,18 @@ class CopernicusFMIterableDataset(IterableDataset):
         self.batch_size = batch_size
         self.time_dim = time_dim
         self.mode = mode
-        self.filter_thres = filter_thres
+        self.filter_x_thres = filter_x_thres
+        self.filter_y_thres = filter_y_thres
 
         if verify_x_fn == 'default':
-            self.verify_x_fn = partial(filter_x, threshold=self.filter_thres)
+            self.verify_x_fn = partial(filter_x, threshold=self.filter_x_thres)
         elif callable(verify_x_fn):
             self.verify_x_fn = verify_x_fn # TODO: further rework on custom function
         else:
             raise ValueError(f"Invalid verify_fn: {verify_x_fn}")
         
         if verify_y_fn == 'default':
-            self.verify_y_fn = partial(filter_y)
+            self.verify_y_fn = partial(filter_y, threshold=self.filter_y_thres)
         elif callable(verify_y_fn):
             self.verify_y_fn = verify_y_fn # TODO: further rework on custom function
         else:
@@ -385,7 +387,8 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
                  num_workers: int=4,
                  prefetch_factor: int = 8,
                  split_ratio: float=0.8,
-                 filter_thres: float=0.05,
+                 filter_x_thres: float=0.05,
+                 filter_y_thres: float=0.05,
                  random_state: int=46):
         super().__init__()
         self.zarr_dirs = zarr_dirs
@@ -399,7 +402,8 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
         self.num_workers = num_workers
         self.prefetch_factor = prefetch_factor
         self.split_ratio = split_ratio
-        self.filter_thres = filter_thres
+        self.filter_x_thres = filter_x_thres
+        self.filter_y_thres = filter_y_thres
         self.random_state = random_state
 
     def construct_samples(self, zarr_paths, kinds):
@@ -481,7 +485,8 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
                                                         verify_x_fn=self.verify_fn,
                                                         batch_size=self.batch_size,
                                                         augmentation=self.augmentation,
-                                                        filter_thres=self.filter_thres
+                                                        filter_x_thres=self.filter_x_thres,
+                                                        filter_y_thres=self.filter_y_thres
                                                         )
             self.val_ds = CopernicusFMIterableDataset(val_samples,
                                                       input_dims=self.input_dims,
@@ -489,7 +494,8 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
                                                       mode="val",
                                                       verify_x_fn=self.verify_fn,
                                                       batch_size=self.batch_size,
-                                                      filter_thres=self.filter_thres
+                                                      filter_x_thres=self.filter_x_thres,
+                                                      filter_y_thres=self.filter_y_thres
                                                       )
 
         if stage == "test":
@@ -500,7 +506,8 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
                                                        mode="test",
                                                        verify_x_fn=self.verify_fn,
                                                        batch_size=self.batch_size,
-                                                       filter_thres=self.filter_thres
+                                                       filter_x_thres=self.filter_x_thres,
+                                                       filter_y_thres=self.filter_y_thres
                                                        )
 
         if stage == "predict":
@@ -511,7 +518,8 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
                                                        verify_x_fn=self.verify_fn,
                                                        mode="predict",
                                                        batch_size=self.batch_size,
-                                                       filter_thres=self.filter_thres
+                                                       filter_x_thres=self.filter_x_thres,
+                                                       filter_y_thres=self.filter_y_thres
                                                        )
 
     def train_dataloader(self):
