@@ -252,16 +252,16 @@ class ClayDataset(Dataset):
         waves = torch.tensor(attrs['waves'])
         gsd = torch.tensor(attrs['gsd'])
         if self.augment:
-            for _ in range(self.num_augment):
-                pixel = pixel.unsqueeze(0)
-                label = label.unsqueeze(0)
-                pixel, label = self.augment(pixel, label)
-                pixel = pixel.squeeze(0)
-                label = label.squeeze(0)
-        return dict(pixels=pixel,  # [B C H W]
-                    y=label,  # [B, H, W]
-                    time=time, # [B 4]
-                    latlon=latlon,  # [B 4]
+            pixel = pixel[None]
+            label = label[None, None]
+            pixel, label = self.augment(pixel, label)
+            pixel = pixel[0]
+            label = label[0][0]
+            
+        return dict(pixels=pixel,  # [C H W]
+                    y=label,  # [H, W]
+                    time=time, # [4]
+                    latlon=latlon,  # [4]
                     gsd=gsd, # 1
                     waves=waves,  # [N]
             )
