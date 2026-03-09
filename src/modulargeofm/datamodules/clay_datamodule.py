@@ -1,5 +1,5 @@
 from functools import partial
-import glob
+import glob, gc
 import torch
 import math
 import rioxarray
@@ -89,7 +89,7 @@ class ClayIterableDataset(IterableDataset):
             self.verify_y_fn = verify_y_fn
         else:
             raise ValueError("veriffy_y_fn should be 'default' or callable function")
-        
+    
     def __iter__(self):
         """
         """
@@ -106,7 +106,8 @@ class ClayIterableDataset(IterableDataset):
                 num_times = len(xr_dataset[self.time_dim])
             else:
                 num_times = 1
-            sample_time_list.extend((key, xr_dataset, t) for t in range(num_times))
+            sample_time_list.extend((key, modality.get('pixels_path'), t) for t in range(num_times))
+            xr_dataset.close()
         total_jobs = len(sample_time_list)
 
         # get num of avail workers
@@ -119,7 +120,8 @@ class ClayIterableDataset(IterableDataset):
             end = min(start + job_per_worker, total_jobs)
         
         for global_index in range(start, end):
-            sample_key, xr_dataset, time = sample_time_list[global_index]
+            sample_key, pixels_path, time = sample_time_list[global_index]
+            xr_dataset = xr.open_zarr(pixels_path, decode_coords="all", chunks=None)
             modality = self.samples.get(sample_key)
             wavelist = torch.tensor(modality.get('wavelist', None))
             mean = torch.tensor(modality.get('mean'), dtype=torch.float32)
@@ -139,8 +141,9 @@ class ClayIterableDataset(IterableDataset):
             gsd = torch.tensor(abs(subset.rio.resolution()[0])) # in meters
 
             # batch generator
-            batch_gen = iter(create_batch_generator(subset, self.input_dims, self.input_overlap))
-            for batch in batched(batch_gen, self.batch_size):
+            batch_gen = create_batch_generator(subset, self.input_dims, self.input_overlap)
+            batch_iter = iter(batch_gen)
+            for batch in batched(batch_iter, self.batch_size):
                 batch_tensor = []
                 xmin_batch_tensor = []
                 xmax_batch_tensor = []
@@ -214,13 +217,17 @@ class ClayIterableDataset(IterableDataset):
                 batch_x = batch_tensor[:, 1:, :, :] # input data
                 batch_x = self.normalise(batch_x).clamp(min=-1.0, max=1.0)
                 batch_x = torch.nan_to_num(batch_x, nan=0.0)
-                yield dict(pixels=batch_x,  # [B C H W]
+                yield  dict(pixels=batch_x,  # [B C H W]
                            y=batch_y,  # [B, H, W]
                            time=time_tensor, # [B 4]
                            latlon=latlon_tensor,  # [B 4]
                            gsd=gsd, # 1
                            waves=wavelist,  # [N]
                             )
+            subset.close()
+            xr_dataset.close()
+            del batch_iter, xr_dataset, subset
+            gc.collect()
                 
 class ClayDataset(Dataset):
     def __init__(self, chip_zarr_dir, augment=None, num_augment=1):
@@ -481,7 +488,7 @@ class ClayIterableDataModule(L.LightningDataModule):
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             prefetch_factor=self.prefetch_factor
         )
     def val_dataloader(self):
@@ -491,7 +498,7 @@ class ClayIterableDataModule(L.LightningDataModule):
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             prefetch_factor=self.prefetch_factor
         )
 
@@ -502,7 +509,7 @@ class ClayIterableDataModule(L.LightningDataModule):
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             prefetch_factor=self.prefetch_factor
         )
 
@@ -513,6 +520,6 @@ class ClayIterableDataModule(L.LightningDataModule):
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             prefetch_factor=self.prefetch_factor
         )
