@@ -128,9 +128,7 @@ class ClayIterableDataset(IterableDataset):
             std = torch.tensor(modality.get('std'), dtype=torch.float32)
             bandnames = modality.get('bandnames', None)
             self.normalise = Normalize(mean=mean, std=std)
-
-            if self.mode == 'predict':
-                bandnames = bandnames[1:]
+            
             if self.time_dim in xr_dataset.dims:
                 subset = xr_dataset[bandnames].isel({self.time_dim: time})
             else:
@@ -204,9 +202,14 @@ class ClayIterableDataset(IterableDataset):
                     xmax_batch_tensor = xmax_batch_tensor[valid_mask]
                     ymin_batch_tensor = ymin_batch_tensor[valid_mask]
                     ymax_batch_tensor = ymax_batch_tensor[valid_mask]
-                    batch_y = batch_tensor[:, 0,  :, :] # label
+                    
+                    batch_x = batch_tensor[:, 1:, :, :] # input data
+                    batch_y = batch_tensor[:, 0,  :, :] # label    
                 else:
-                    batch_y = [ycoord_batch, xcoord_batch, spatial_ref_batch]
+                    batch_x = batch_tensor[:, :, :, :] # input data
+                    batch_y = [torch.tensor(ycoord_batch), 
+                               torch.tensor(xcoord_batch), 
+                               torch.tensor(spatial_ref_batch)]
 
                 time_tensor = torch.full((batch_tensor.shape[0], 4), 0) #TODO: later, consider time
                 latlon_tensor = torch.stack([ymin_batch_tensor,
@@ -214,7 +217,6 @@ class ClayIterableDataset(IterableDataset):
                                              ymax_batch_tensor,
                                              xmax_batch_tensor], 
                                              dim=1)
-                batch_x = batch_tensor[:, 1:, :, :] # input data
                 batch_x = self.normalise(batch_x).clamp(min=-1.0, max=1.0)
                 batch_x = torch.nan_to_num(batch_x, nan=0.0)
                 yield  dict(pixels=batch_x,  # [B C H W]
