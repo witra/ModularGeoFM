@@ -266,7 +266,7 @@ class CopernicusFMIterableDataset(IterableDataset):
             gc.collect()
 
 class CopernicusFMDataset(Dataset):
-    def __init__(self, chip_zarr_dir, transform=None):
+    def __init__(self, chip_zarr_dir, augment=None, num_augment=1):
         self.chip_zarr_dir = chip_zarr_dir
         self.transform = transform
         self.index = []
@@ -275,8 +275,12 @@ class CopernicusFMDataset(Dataset):
             z = zarr.open(zarr_path, mode='r')
             n = z['images'].shape[0]
             self.index.extend([(path_id, i) for i in range(n)])    
-    def __len__(self):
-        return len(self.index)
+     
+     def __len__(self):
+        if self.augment:
+            return len(self.index) * self.num_augment
+        else:
+            return len(self.index)
     
     def __getitem__(self, idx):
         path_id, i = self.index[idx]
@@ -291,8 +295,11 @@ class CopernicusFMDataset(Dataset):
         input_mode = attrs['input_mode']
         kernel_size = attrs['kernel_size'] if attrs['kernel_size'] is not None else 16 # folllow the default from copernicusfm
         if self.transform:
-            image = self.transform(image)
-            label = self.transform(label)
+            image = image[None]
+            label = label[None, None]
+            image, label = self.augment(image, label)
+            image = image[0]
+            label = label[0][0]
 
         return dict(x=image, 
                     y=label, 
