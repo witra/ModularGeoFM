@@ -176,8 +176,6 @@ class CopernicusFMIterableDataset(IterableDataset):
             kernel_size = torch.tensor(modality['kernel_size']) if modality.get('kernel_size') is not None else 16 # folllow the default from copernicusfm
             self.normalise = Normalize(mean=mean, std=std)
 
-            if self.mode == 'predict':
-                bandnames = bandnames[1:]
             if self.time_dim in xr_dataset.dims:
                 subset = xr_dataset[bandnames].isel({self.time_dim: time})
             else:
@@ -242,14 +240,15 @@ class CopernicusFMIterableDataset(IterableDataset):
                         continue
                     xcenter_batch_tensor = xcenter_batch_tensor[valid_mask]
                     ycenter_batch_tensor = ycenter_batch_tensor[valid_mask]
+                    batch_x = batch_tensor[:, 1:, :, :] # input data
                     batch_y = batch_tensor[:, 0,  :, :] # label
                 else:
+                    batch_x = batch_tensor[:, :, :, :]
                     batch_y = [ycoord_batch, xcoord_batch, spatial_ref_batch]
 
                 area_tensor = torch.full((batch_tensor.shape[0],), area)
                 time_tensor = torch.full((batch_tensor.shape[0],), torch.nan) #TODO: later, consider time
                 meta_info = torch.stack([xcenter_batch_tensor, ycenter_batch_tensor, time_tensor, area_tensor], dim=1)
-                batch_x = batch_tensor[:, 1:, :, :] # input data
                 batch_x = self.normalise(batch_x).clamp(min=-1.0, max=1.0)
                 batch_x = torch.nan_to_num(batch_x, nan=0.0)
                 yield dict( x=batch_x, # [B, C, H, W]
@@ -261,6 +260,10 @@ class CopernicusFMIterableDataset(IterableDataset):
                             input_mode=input_mode, 
                             kernel_size=kernel_size
                             )
+            subset.close()
+            xr_dataset.close()
+            del batch_iter, xr_dataset, subset
+            gc.collect()
 
 class CopernicusFMDataset(Dataset):
     def __init__(self, chip_zarr_dir, transform=None):
@@ -529,7 +532,7 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             prefetch_factor=self.prefetch_factor
         )
     def val_dataloader(self):
@@ -539,7 +542,7 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             prefetch_factor=self.prefetch_factor
         )
 
@@ -550,7 +553,7 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             prefetch_factor=self.prefetch_factor
         )
 
@@ -561,6 +564,6 @@ class CopernicusFMIterableDataModule(L.LightningDataModule):
             batch_size=None,
             num_workers=self.num_workers,
             pin_memory=True,
-            persistent_workers=True,
+            persistent_workers=True if self.num_workers > 0 else False,
             prefetch_factor=self.prefetch_factor
         )
