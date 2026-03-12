@@ -54,21 +54,14 @@ class FakeXRDataset:
         if name in ["x", "y"]:
             return FakeXRArray(np.array([0.0, 1.0]))
         raise AttributeError
+class FakeNormalize:
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
 
-@pytest.fixture
-def dummy_samples():
-    return {
-        "sample1": dict(
-            pixels_path='dummy_path.zarr',
-            wavelist=[1, 2, 3],
-            bandwidth=[10, 10, 10],
-            mean=[1, 1, 1],
-            std=[0.5, 0.5, 0.5],
-            bandnames=['B1', 'B2', 'B3'],
-            input_mode="spectral",
-            kernel_size=3,
-        )
-    }
+    def __call__(self, x):
+        return (x - self.mean.view(1, -1, 1, 1)) / self.std.view(1, -1, 1, 1)
+
 def dummy_accepted_batched_data():
     C, H, W =  4, 16, 16  # channels, height, width
     pixels = np.random.rand(C, H, W).astype(np.float32)
@@ -108,15 +101,7 @@ def dummy_reject_batched_data():
     )
     ds = ds.rio.write_crs("EPSG:4326")
     return ds
-
-class FakeNormalize:
-    def __init__(self, mean, std):
-        self.mean = mean
-        self.std = std
-
-    def __call__(self, x):
-        return (x - self.mean.view(1, -1, 1, 1)) / self.std.view(1, -1, 1, 1)
-    
+ 
 def fake_batched(iterable, batch_size):
     batch = []
     for item in iterable:
@@ -127,6 +112,34 @@ def fake_batched(iterable, batch_size):
     if batch:
         yield batch
 
+@pytest.fixture
+def dummy_samples():
+    return {
+        "sample1": dict(
+            pixels_path='dummy_path.zarr',
+            wavelist=[1, 2, 3],
+            bandwidth=[10, 10, 10],
+            mean=[1, 1, 1],
+            std=[0.5, 0.5, 0.5],
+            bandnames=['B1', 'B2', 'B3'],
+            input_mode="spectral",
+            kernel_size=3,
+        )
+    }
+@pytest.fixture
+def dummy_pred_samples():
+    return {
+        "sample1": dict(
+            pixels_path='dummy_path.zarr',
+            wavelist=[1, 2, 3, 4],
+            bandwidth=[10, 10, 10, 10],
+            mean=[1, 1, 1, 1],
+            std=[0.5, 0.5, 0.5, 0.5],
+            bandnames=['B1', 'B2', 'B3', 'B4'],
+            input_mode="spectral",
+            kernel_size=3,
+        )
+    }
 @pytest.fixture(params=[('train', 1),
                         ('train', 4), 
                         ('val', 1),
@@ -136,10 +149,10 @@ def fake_batched(iterable, batch_size):
                         ('predict', 1),
                         ('predict', 4)
                         ])
-def ds(dummy_samples, request):
+def ds(dummy_samples, dummy_pred_samples, request):
     mode, batch_size = request.param
     ds = CopernicusFMIterableDataset(
-        samples=dummy_samples,
+        samples=dummy_samples if mode != 'predict' else dummy_pred_samples,
         input_dims={'x': 16, 'y': 16},
         input_overlap={'x': 0, 'y': 0},
         mode=mode,
@@ -147,7 +160,8 @@ def ds(dummy_samples, request):
         verify_y_fn='default',
         batch_size=batch_size,
         augmentation=None,
-        filter_thres=0.05
+        filter_x_thres=0.01,
+        filter_y_thres=0.001
     )
     return ds , mode
 
@@ -170,7 +184,8 @@ def test_dataset_init_basic(ds, request):
     assert callable(ds.verify_y_fn)
     assert isinstance(ds.input_dims, dict)
     assert isinstance(ds.input_overlap, dict)
-    assert isinstance(ds.filter_thres, float)
+    assert isinstance(ds.filter_x_thres, float)
+    assert isinstance(ds.filter_y_thres, float)
 
 def test_invalid_verify_fn_raises(dummy_samples):
     """Invalid verify_fn must raise ValueError."""
@@ -210,7 +225,7 @@ def test_iter_yields_valid_batches(monkeypatch, ds):
     
     ds, mode = ds
     batch_size = ds.batch_size
-    num_channels = 3
+    num_channels = 3 if mode != 'predict' else 4
 
     output = next(iter(ds))
     assert isinstance(output, dict) 
@@ -368,7 +383,7 @@ def datamodule():
             augmentation=None,
             batch_size=2,
             num_workers=0,
-            filter_thres=0.01,
+            filter_x_thres=0.01,
         )
     return dm
          
@@ -388,7 +403,8 @@ def test_copernicusfm_datamodule_init(mock_open_func):
         augmentation=None,
         batch_size=2,
         num_workers=0,
-        filter_thres=0.01,
+        filter_x_thres=0.01,
+        filter_y_thres=0.001
         )
 
     # ---------- Assertions ---------
@@ -403,7 +419,8 @@ def test_copernicusfm_datamodule_init(mock_open_func):
     assert isinstance(dm.batch_size, int) and dm.batch_size == 2
     assert isinstance(dm.num_workers, int) and dm.num_workers == 0
     assert isinstance(dm.split_ratio, float) and dm.split_ratio == 0.8
-    assert isinstance(dm.filter_thres, float) and dm.filter_thres == 0.01
+    assert isinstance(dm.filter_x_thres, float) and dm.filter_x_thres == 0.01
+    assert isinstance(dm.filter_y_thres, float) and dm.filter_y_thres == 0.001
 
 def test_construct_samples(datamodule):
     zarr_paths = ['dummy1.zaar', 'dummy3.zaar', 'dummyZ.zaar']
