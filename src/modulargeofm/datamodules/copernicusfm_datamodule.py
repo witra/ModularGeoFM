@@ -268,7 +268,8 @@ class CopernicusFMIterableDataset(IterableDataset):
 class CopernicusFMDataset(Dataset):
     def __init__(self, chip_zarr_dir, augment=None, num_augment=1):
         self.chip_zarr_dir = chip_zarr_dir
-        self.transform = transform
+        self.augment = augment
+        self.num_augment = num_augment
         self.index = []
         self.zarr_paths = glob.glob(f"{self.chip_zarr_dir}/*.zarr")
         for path_id, zarr_path in enumerate(self.zarr_paths):
@@ -276,13 +277,14 @@ class CopernicusFMDataset(Dataset):
             n = z['images'].shape[0]
             self.index.extend([(path_id, i) for i in range(n)])    
      
-     def __len__(self):
+    def __len__(self):
         if self.augment:
             return len(self.index) * self.num_augment
         else:
             return len(self.index)
     
     def __getitem__(self, idx):
+        idx = idx // self.num_augment  if self.augment else idx
         path_id, i = self.index[idx]
         z = zarr.open(self.zarr_paths[path_id], mode='r')
         image = torch.from_numpy(z['images'][i])
@@ -294,7 +296,7 @@ class CopernicusFMDataset(Dataset):
         # language_embed= [None] #if attrs['language_embed'] == None else attrs['language_embed'] #TODO rework for this variable
         input_mode = attrs['input_mode']
         kernel_size = attrs['kernel_size'] if attrs['kernel_size'] is not None else 16 # folllow the default from copernicusfm
-        if self.transform:
+        if self.augment:
             image = image[None]
             label = label[None, None]
             image, label = self.augment(image, label)
