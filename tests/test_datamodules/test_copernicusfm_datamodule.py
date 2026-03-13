@@ -326,10 +326,10 @@ def test_transform_applied(tmp_path):
     zarr_path = tmp_path / "test.zarr"
     create_test_zarr(zarr_path, n=1)
 
-    def transform(x):
-        return x + 1
+    def augment(x, y):
+        return x + 1, y+1
 
-    ds = CopernicusFMDataset(str(tmp_path), transform=transform)
+    ds = CopernicusFMDataset(str(tmp_path), augment=augment)
     sample = ds[0]
 
     assert torch.all(sample["x"] >= 1)
