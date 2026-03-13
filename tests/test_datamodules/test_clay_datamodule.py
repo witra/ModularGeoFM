@@ -8,10 +8,10 @@ import xarray as xr
 import zarr
 from unittest.mock import MagicMock, patch, mock_open
 from box import Box
-from modulargeofm.datamodules.copernicusfm_datamodule import CopernicusFMIterableDataset, CopernicusFMDataset, CopernicusFMIterableDataModule 
+from modulargeofm.datamodules.clay_datamodule import ClayIterableDataset, ClayDataset, ClayIterableDataModule 
 
 # ----------------------------------------
-# CopernicusFMIterableDataset
+# ClayIterableDataset
 # ----------------------------------------
 class FakeXRArray:
     def __init__(self, values):
@@ -54,14 +54,96 @@ class FakeXRDataset:
         if name in ["x", "y"]:
             return FakeXRArray(np.array([0.0, 1.0]))
         raise AttributeError
-class FakeNormalize:
-    def __init__(self, mean, std):
-        self.mean = mean
-        self.std = std
+    
+    def close(self):
+        return None
 
-    def __call__(self, x):
-        return (x - self.mean.view(1, -1, 1, 1)) / self.std.view(1, -1, 1, 1)
+@pytest.fixture
+def dummy_samples():
+    return {
+        "sample1": dict(
+            pixels_path='dummy_path.zarr',
+            wavelist=[1, 2, 3],
+            bandwidth=[ 10, 10, 10],
+            mean=[ 1, 1, 1],
+            std=[ 0.5, 0.5, 0.5],
+            bandnames=['label','B1', 'B2', 'B3'],
+            input_mode="spectral",
+            kernel_size=3,
+        )
+    }
+@pytest.fixture
+def dummy_pred_samples():
+    return {
+        "sample1": dict(
+            pixels_path='dummy_path.zarr',
+            wavelist=[1, 2, 3, 4],
+            bandwidth=[10, 10, 10, 10],
+            mean=[1, 1, 1, 1],
+            std=[0.5, 0.5, 0.5, 0.5],
+            bandnames=['B1', 'B2', 'B3', 'B4'],
+            input_mode="spectral",
+            kernel_size=3,
+        )
+    }
+@pytest.fixture(params=[('train', 1),
+                        ('train', 4), 
+                        ('val', 1),
+                        ('val', 4),
+                        ('test', 1),
+                        ('test', 4), 
+                        ('predict', 1),
+                        ('predict', 4)
+                        ])
+def ds(dummy_samples, dummy_pred_samples, request):
+    mode, batch_size = request.param
+    ds = ClayIterableDataset(
+        samples=dummy_samples if mode != 'predict' else dummy_pred_samples,
+        input_dims={'x': 16, 'y': 16},
+        input_overlap={'x': 0, 'y': 0},
+        mode=mode,
+        verify_x_fn='default',
+        verify_y_fn='default',
+        batch_size=batch_size,
+        augmentation=None,
+        filter_x_thres=0.01,
+        filter_y_thres=0.001
+    )
+    return ds , mode
 
+@pytest.fixture(params=['None', 'multi'])
+def worker_info(request):
+    if request.param == 'None':
+        return None
+    mock_info = MagicMock()
+    mock_info.id = 0
+    mock_info.num_workers = 2
+    return mock_info
+
+def test_dataset_init_basic(ds, request):
+    """Ensure attributes are set correctly."""
+    ds, mode = ds
+    sample_1 = ds.samples['sample1']
+    assert os.path.basename(sample_1['pixels_path']).split('.')[1] == 'zarr'
+    assert ds.mode == mode
+    assert callable(ds.verify_x_fn)
+    assert callable(ds.verify_y_fn)
+    assert isinstance(ds.input_dims, dict)
+    assert isinstance(ds.input_overlap, dict)
+    assert isinstance(ds.filter_x_thres, float)
+    assert isinstance(ds.filter_y_thres, float)
+
+def test_invalid_verify_fn_raises(dummy_samples):
+    """Invalid verify_fn must raise ValueError."""
+    with pytest.raises(ValueError):
+        ClayIterableDataset(
+            samples=dummy_samples,
+            input_dims={"x": 16, "y": 16},
+            input_overlap=None,
+            mode="train",
+            verify_x_fn="unknown",
+            verify_y_fn="unknown"
+        )
 def dummy_accepted_batched_data():
     C, H, W =  4, 16, 16  # channels, height, width
     pixels = np.random.rand(C, H, W).astype(np.float32)
@@ -101,103 +183,6 @@ def dummy_reject_batched_data():
     )
     ds = ds.rio.write_crs("EPSG:4326")
     return ds
- 
-def fake_batched(iterable, batch_size):
-    batch = []
-    for item in iterable:
-        batch.append(item)
-        if len(batch) == batch_size:
-            yield batch
-            batch = []
-    if batch:
-        yield batch
-
-@pytest.fixture
-def dummy_samples():
-    return {
-        "sample1": dict(
-            pixels_path='dummy_path.zarr',
-            wavelist=[1, 2, 3],
-            bandwidth=[10, 10, 10],
-            mean=[1, 1, 1],
-            std=[0.5, 0.5, 0.5],
-            bandnames=['B1', 'B2', 'B3'],
-            input_mode="spectral",
-            kernel_size=3,
-        )
-    }
-@pytest.fixture
-def dummy_pred_samples():
-    return {
-        "sample1": dict(
-            pixels_path='dummy_path.zarr',
-            wavelist=[1, 2, 3, 4],
-            bandwidth=[10, 10, 10, 10],
-            mean=[1, 1, 1, 1],
-            std=[0.5, 0.5, 0.5, 0.5],
-            bandnames=['B1', 'B2', 'B3', 'B4'],
-            input_mode="spectral",
-            kernel_size=3,
-        )
-    }
-@pytest.fixture(params=[('train', 1),
-                        ('train', 4), 
-                        ('val', 1),
-                        ('val', 4),
-                        ('test', 1),
-                        ('test', 4), 
-                        ('predict', 1),
-                        ('predict', 4)
-                        ])
-def ds(dummy_samples, dummy_pred_samples, request):
-    mode, batch_size = request.param
-    ds = CopernicusFMIterableDataset(
-        samples=dummy_samples if mode != 'predict' else dummy_pred_samples,
-        input_dims={'x': 16, 'y': 16},
-        input_overlap={'x': 0, 'y': 0},
-        mode=mode,
-        verify_x_fn='default',
-        verify_y_fn='default',
-        batch_size=batch_size,
-        augmentation=None,
-        filter_x_thres=0.01,
-        filter_y_thres=0.001
-    )
-    return ds , mode
-
-@pytest.fixture(params=['None', 'multi'])
-def worker_info(request):
-    if request.param == 'None':
-        return None
-    mock_info = MagicMock()
-    mock_info.id = 0
-    mock_info.num_workers = 2
-    return mock_info
-
-def test_dataset_init_basic(ds, request):
-    """Ensure attributes are set correctly."""
-    ds, mode = ds
-    sample_1 = ds.samples['sample1']
-    assert os.path.basename(sample_1['pixels_path']).split('.')[1] == 'zarr'
-    assert ds.mode == mode
-    assert callable(ds.verify_x_fn)
-    assert callable(ds.verify_y_fn)
-    assert isinstance(ds.input_dims, dict)
-    assert isinstance(ds.input_overlap, dict)
-    assert isinstance(ds.filter_x_thres, float)
-    assert isinstance(ds.filter_y_thres, float)
-
-def test_invalid_verify_fn_raises(dummy_samples):
-    """Invalid verify_fn must raise ValueError."""
-    with pytest.raises(ValueError):
-        CopernicusFMIterableDataset(
-            samples=dummy_samples,
-            input_dims={"x": 16, "y": 16},
-            input_overlap=None,
-            mode="train",
-            verify_x_fn="unknown",
-            verify_y_fn="unknown"
-        )
 
 class FakeBatchGenerator:
     def __init__(self, subset, input_dims, input_overlap):
@@ -209,19 +194,35 @@ class FakeBatchGenerator:
         dummy_data = [dummy_accepted_batched_data(), dummy_reject_batched_data()]
         for i in range(len(dummy_data)):
             yield dummy_data[i]
+
+class FakeNormalize:
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, x):
+        return (x - self.mean.view(1, -1, 1, 1)) / self.std.view(1, -1, 1, 1)
+    
+def fake_batched(iterable, batch_size):
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
     
 def test_iter_yields_valid_batches(monkeypatch, ds):
-    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.xr.open_zarr",
+    monkeypatch.setattr("modulargeofm.datamodules.clay_datamodule.xr.open_zarr",
                         lambda *a, **k: FakeXRDataset(
                             data=np.random.rand(2, 4, 4).astype(np.float32),  # [bands, H, W]
                             bandnames=["label", "b1"],
                         ))
-    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.create_batch_generator",
-                        FakeBatchGenerator
-                        )
-    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.Normalize", FakeNormalize)
-    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.batched", fake_batched)
-    monkeypatch.setattr("modulargeofm.datamodules.copernicusfm_datamodule.get_worker_info", lambda: None)
+    monkeypatch.setattr("modulargeofm.datamodules.clay_datamodule.create_batch_generator", FakeBatchGenerator)
+    monkeypatch.setattr("modulargeofm.datamodules.clay_datamodule.Normalize", FakeNormalize)
+    monkeypatch.setattr("modulargeofm.datamodules.clay_datamodule.batched", fake_batched)
+    monkeypatch.setattr("modulargeofm.datamodules.clay_datamodule.get_worker_info", lambda: None)
     
     ds, mode = ds
     batch_size = ds.batch_size
@@ -231,34 +232,34 @@ def test_iter_yields_valid_batches(monkeypatch, ds):
     assert isinstance(output, dict) 
 
     # test the returned keys and types
-    assert "x" in output
+    assert "pixels" in output
     assert "y" in output
-    assert "meta_info" in output
-    assert "wave_list" in output
-    assert "bandwidth" in output
-    assert "language_embed" in output
-    assert "input_mode" in output
-    assert "kernel_size" in output
-    assert isinstance(output["x"], torch.Tensor)
+    assert "time" in output
+    assert "latlon" in output
+    assert "gsd" in output
+    assert "waves" in output
+    assert isinstance(output["pixels"], torch.Tensor)
     assert isinstance(output["y"], list) if mode=='predict' else isinstance(output["y"], torch.Tensor)
 
     # test the the filtered batch size
-    assert len(output["x"]) == 2 if mode == 'predict' and batch_size > 1 else 1  # filter patch in different modes
+    assert len(output["pixels"]) == 2 if mode == 'predict' and batch_size > 1 else 1  # filter patch in different modes
     assert len(output["y"][0]) == 2 if mode == 'predict' and batch_size > 1 else 1  # filter patch in different modes
     
     # test the shape 
-    assert output["x"][0].size() == (num_channels, ds.input_dims['y'], ds.input_dims['x']) if mode == 'predict' else (num_channels-1, ds.input_dims['y'], ds.input_dims['x'])
+    print(output["pixels"][0].size())
+    print(num_channels, ds.input_dims['y'], ds.input_dims['x'])
+    assert output["pixels"][0].size() == (num_channels, ds.input_dims['y'], ds.input_dims['x']) if mode == 'predict' else (num_channels-1, ds.input_dims['y'], ds.input_dims['x'])
     assert len(output["y"]) == 3 if mode == 'predict' else output["y"][0].size() == (ds.input_dims['y'], ds.input_dims['x'])
     assert output["y"][0].size() == (ds.input_dims['y'], ds.input_dims['x']) if mode != 'predict' else True
      
 # ----------------------------------------
-# CopernicusFMDataset
+# ClayFMDataset
 # ----------------------------------------
 def create_test_zarr(path, n=3, c=4, h=8, w=8):
     root = zarr.open(path, mode="w")
 
     root.create_array(
-        "images",
+        "pixels",
         data=np.random.rand(n, c, h, w).astype(np.float32)
     )
     root.create_array(
@@ -266,14 +267,17 @@ def create_test_zarr(path, n=3, c=4, h=8, w=8):
         data=np.random.randint(0, 2, size=(n, h, w)).astype(np.int64)
     )
     root.create_array(
-        "meta_info",
+        "latlon",
         data=np.random.rand(n, 4).astype(np.float32)
     )
 
-    root.attrs["wavelist"] = list(range(c))
-    root.attrs["bandwidth"] = [10.0] * c
-    root.attrs["input_mode"] = "spectral"
-    root.attrs["kernel_size"] = None
+    root.create_array(
+        "time",
+        data=np.random.rand(n, 4).astype(np.float32)
+    )
+
+    root.attrs["waves"] = list(range(c))
+    root.attrs["gsd"] = [10.0] 
 
 def test_len_multiple_zarrs(tmp_path):
     zarr1 = tmp_path / "a.zarr"
@@ -282,7 +286,7 @@ def test_len_multiple_zarrs(tmp_path):
     create_test_zarr(zarr1, n=2)
     create_test_zarr(zarr2, n=3)
 
-    ds = CopernicusFMDataset(str(tmp_path))
+    ds = ClayDataset(str(tmp_path))
 
     assert len(ds) == 5
 
@@ -290,68 +294,56 @@ def test_getitem_returns_expected_dict(tmp_path):
     zarr_path = tmp_path / "test.zarr"
     create_test_zarr(zarr_path, n=1)
 
-    ds = CopernicusFMDataset(str(tmp_path))
+    ds = ClayDataset(str(tmp_path))
     sample = ds[0]
 
     assert isinstance(sample, dict)
 
-    required_keys = {
-        "x", "y", "meta_info",
-        "wave_list", "bandwidth",
-        "language_embed", "input_mode", "kernel_size"
-    }
+    required_keys = {"pixels", "y", "time", "latlon", "gsd", "waves"}
     assert required_keys.issubset(sample.keys())
 
-    assert isinstance(sample["x"], torch.Tensor)
+    assert isinstance(sample["pixels"], torch.Tensor)
     assert isinstance(sample["y"], torch.Tensor)
-    assert isinstance(sample["meta_info"], torch.Tensor)
-    assert isinstance(sample["wave_list"], torch.Tensor)
-    assert isinstance(sample["bandwidth"], torch.Tensor)
-    assert isinstance(sample["kernel_size"], int)
+    assert isinstance(sample["time"], torch.Tensor)
+    assert isinstance(sample["waves"], torch.Tensor)
+    assert isinstance(sample["gsd"], torch.Tensor)
+    assert isinstance(sample["waves"], torch.Tensor)
 
-    assert sample["x"].ndim == 3  # [C, H, W]
+    assert sample["pixels"].ndim == 3  # [C, H, W]
     assert sample["y"].ndim == 2  # [H, W]
-    assert sample["meta_info"].shape == (4,)
-
-def test_kernel_size_default(tmp_path):
-    zarr_path = tmp_path / "test.zarr"
-    create_test_zarr(zarr_path, n=1)
-
-    ds = CopernicusFMDataset(str(tmp_path))
-    sample = ds[0]
-
-    assert sample["kernel_size"] == 16
+    assert sample["time"].shape == (4,)
+    assert sample["latlon"].shape == (4,)
+    assert sample["gsd"].shape == (1,)
+    assert sample["waves"].shape == (4,)
 
 def test_transform_applied(tmp_path):
     zarr_path = tmp_path / "test.zarr"
     create_test_zarr(zarr_path, n=1)
 
-    def augment(x, y):
+    def transform(x, y):
         return x + 1, y+1
 
-    ds = CopernicusFMDataset(str(tmp_path), augment=augment)
+    ds = ClayDataset(str(tmp_path), augment=transform)
     sample = ds[0]
 
-    assert torch.all(sample["x"] >= 1)
+    assert torch.all(sample["pixels"] >= 1)
     assert torch.all(sample["y"] >= 1)
 
 def test_indexing_across_files(tmp_path):
     create_test_zarr(tmp_path / "a.zarr", n=2)
     create_test_zarr(tmp_path / "b.zarr", n=2)
 
-    ds = CopernicusFMDataset(str(tmp_path))
+    ds = ClayDataset(str(tmp_path))
 
     samples = [ds[i] for i in range(len(ds))]
 
     assert len(samples) == 4
     for s in samples:
-        assert "x" in s
-
-
+        assert "pixels" in s
 
 
 # ----------------------------------------
-# CopernicusFMIterableDataModule
+# ClayIterableDataModule
 # ----------------------------------------
 # Sample metadata to mock yaml content
 META = {
@@ -361,19 +353,14 @@ META = {
                 "bandnames": ["b"],
                   "mean": {"b": 0}, 
                   "std": {"b": 1}, 
-                  "kernel_size": 3},
-
-    "kind2": {"input_mode": "variable", 
-              "meta_info": {"info": 1}, 
-              "language_embed": [0],
-              "kernel_size": 5}
+                 },
 }
 
 @pytest.fixture()
 def datamodule():
     yaml_content = yaml.dump(META)
     with patch("builtins.open", mock_open(read_data=yaml_content)):
-        dm =  CopernicusFMIterableDataModule(
+        dm =  ClayIterableDataModule(
             zarr_dirs=['./dummy_zarr_dir1/', './dummy_zarr_dir2/'],
             data_kinds=['S2_xz', 'DEM_yz'],
             metadata_path='./dummy_metadata.yaml',
@@ -384,16 +371,17 @@ def datamodule():
             batch_size=2,
             num_workers=0,
             filter_x_thres=0.01,
+            filter_y_thres=0.001
         )
     return dm
          
          
 @patch("builtins.open", new_callable=mock_open, read_data=yaml.dump(META))
-def test_copernicusfm_datamodule_init(mock_open_func):
+def test_clay_datamodule_init(mock_open_func):
     """Test datamodule initialization."""
     
     metadata_path = './dummy_metadata.yaml'
-    dm =  CopernicusFMIterableDataModule(
+    dm =  ClayIterableDataModule(
         zarr_dirs=['./dummy_zarr_dir1/', './dummy_zarr_dir2/',],
         data_kinds=['S2_xz', 'DEM_yz'],
         metadata_path=metadata_path,
@@ -411,7 +399,6 @@ def test_copernicusfm_datamodule_init(mock_open_func):
     mock_open_func.assert_called_once_with(metadata_path)  
     assert isinstance(dm.zarr_dirs, list) and all(isinstance(p, str) for p in dm.zarr_dirs)
     assert isinstance(dm.data_kinds, list) and all(isinstance(k, str) for k in dm.data_kinds)
-    assert isinstance(dm.metadata, Box) and dm.metadata.kind1.kernel_size == 3
     assert isinstance(dm.input_dims, dict) and dm.input_dims == {'x': 64, 'y': 64}
     assert isinstance(dm.input_overlap, dict) and dm.input_overlap == {'x': 16, 'y': 16}
     assert callable(dm.verify_fn) or dm.verify_fn == 'basic'
@@ -424,18 +411,17 @@ def test_copernicusfm_datamodule_init(mock_open_func):
 
 def test_construct_samples(datamodule):
     zarr_paths = ['dummy1.zaar', 'dummy3.zaar', 'dummyZ.zaar']
-    kinds = ['kind1', 'kind1', 'kind2']
+    kinds = ['kind1', 'kind1', 'kind1']
     samples = datamodule.construct_samples(zarr_paths, kinds)
 
     assert isinstance(samples, dict)
     assert all(isinstance(samples[key], dict) for key in samples.keys())
-    assert list(samples['dummy1'].keys()) == ['pixels_path', 'wavelist', 'bandwidth', 'bandnames', 'mean', 'std', 'input_mode', 'kernel_size']
-    assert list(samples['dummyZ'].keys()) == ['pixels_path', 'meta_info', 'language_embed', 'input_mode', 'kernel_size']
+    assert list(samples['dummy1'].keys()) == ['pixels_path', 'wavelist', 'bandnames', 'mean', 'std']
 
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.train_test_split")
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMIterableDataModule.construct_samples")
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.glob.glob")
-@patch("modulargeofm.datamodules.copernicusfm_datamodule.CopernicusFMIterableDataset")
+@patch("modulargeofm.datamodules.clay_datamodule.train_test_split")
+@patch("modulargeofm.datamodules.clay_datamodule.ClayIterableDataModule.construct_samples")
+@patch("modulargeofm.datamodules.clay_datamodule.glob.glob")
+@patch("modulargeofm.datamodules.clay_datamodule.ClayIterableDataset")
 @pytest.mark.parametrize("stage", ["fit", "test", "predict"])
 def test_setup_stages(mock_dataset, 
                       mock_glob, 
@@ -444,7 +430,7 @@ def test_setup_stages(mock_dataset,
                       stage, 
                       datamodule
                       ):
-    mock_dataset.return_value =  "CopernicusFM_IterableDataset"
+    mock_dataset.return_value =  "ClayIterableDataset"
     mock_glob.return_value = MagicMock()
     mock_traintest_split.return_value = ('train_path', 'val_path', 'train_kind', 'val_kind')
     mock_construct_samples.return_value = MagicMock()
@@ -455,7 +441,7 @@ def test_setup_stages(mock_dataset,
 
     attrs = {"fit": ["train_ds", "val_ds"], "test": ["test_ds"], "predict": ["pred_ds"]}
     assert all(hasattr(datamodule, attr) for attr in attrs[stage]) 
-    assert all(getattr(datamodule, attr) == "CopernicusFM_IterableDataset" for attr in attrs[stage])  
+    assert all(getattr(datamodule, attr) == "ClayIterableDataset" for attr in attrs[stage])  
 
 
 

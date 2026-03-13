@@ -57,7 +57,7 @@ if __name__ == '__main__':
         num_workers=3,
         prefetch_factor=1,
         split_ratio=0.95,
-        filter_thres=0.05 # pass only data with nan and inf less than 5%
+        filter_x_thres=0.05 # pass only data with nan and inf less than 5%
     )
     datamodule.setup(stage='fit')
 

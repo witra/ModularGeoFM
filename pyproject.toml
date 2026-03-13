@@ -45,6 +45,7 @@ dependencies = [
         "odc-stac",
         "contextily",
         "zarr",
+        "claymodel @ git+https://github.com/Clay-foundation/model.git"
 ]
 
 [project.optional-dependencies]
@@ -61,4 +62,5 @@ test = [
     "diff-cover"
 ]
 
-[tool]
+[tool.hatch.metadata]
+allow-direct-references = true
