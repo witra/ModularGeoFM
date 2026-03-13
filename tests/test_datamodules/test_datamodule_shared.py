@@ -4,7 +4,7 @@ import torch
 import xarray as xr
 from unittest.mock import MagicMock, patch
 from modulargeofm.datamodules.clay_datamodule import ClayIterableDataset
-from modulargeofm.datamodules.shared import create_batch_generator
+from modulargeofm.datamodules.shared import create_batch_generator, filter_x, filter_y
 
 @pytest.fixture
 def dummy_samples():
@@ -16,6 +16,20 @@ def dummy_samples():
             mean=[1, 1, 1],
             std=[0.5, 0.5, 0.5],
             bandnames=['B1', 'B2', 'B3'],
+            input_mode="spectral",
+            kernel_size=3,
+        )
+    }
+@pytest.fixture
+def dummy_pred_samples():
+    return {
+        "sample1": dict(
+            pixels_path='dummy_path.zarr',
+            wavelist=[1, 2, 3, 4],
+            bandwidth=[10, 10, 10, 10],
+            mean=[1, 1, 1, 1],
+            std=[0.5, 0.5, 0.5, 0.5],
+            bandnames=['B1', 'B2', 'B3', 'B4'],
             input_mode="spectral",
             kernel_size=3,
         )
@@ -32,7 +46,7 @@ def dummy_samples():
 def ds(dummy_samples, request):
     mode, batch_size = request.param
     ds = ClayIterableDataset(
-        samples=dummy_samples,
+        samples=dummy_samples if mode != 'predict' else dummy_pred_samples,
         input_dims={'x': 16, 'y': 16},
         input_overlap={'x': 0, 'y': 0},
         mode=mode,
@@ -40,7 +54,8 @@ def ds(dummy_samples, request):
         verify_y_fn='default',
         batch_size=batch_size,
         augmentation=None,
-        filter_thres=0.05
+        filter_x_thres=0.01,
+        filter_y_thres=0.001
     )
     return ds , mode
 
@@ -53,16 +68,14 @@ def test_create_batch_generator(mock_bg, ds):
     mock_bg.assert_called_once_with(dummy_subset,
                                     input_dims=ds.input_dims,
                                     input_overlap=ds.input_overlap)
-def test_default_xfilter_threshold(ds):
+def test_default_xfilter_threshold():
     """Patch with zeros and NaNs should be filtered out properly."""
-    ds, _ = ds
     patch = torch.tensor([[0.0, float("nan")], [1.0, 1.0]])
-    assert torch.equal(ds.verify_x_fn(patch, threshold=0.2), torch.tensor([False, True]))
-    assert torch.equal(ds.verify_x_fn(torch.ones((2,2)), threshold=0.2), torch.tensor([True, True])) 
+    assert torch.equal(filter_x(patch, threshold=0.2), torch.tensor([False, True]))
+    assert torch.equal(filter_x(torch.ones((2,2)), threshold=0.2), torch.tensor([True, True])) 
 
-def test_default_yfilter_threshold(ds):
+def test_default_yfilter_threshold():
     """Patch with zeros and NaNs should be filtered out properly."""
-    ds, _ = ds
-    patch = torch.tensor([[0.0, 0.0], [1.0, 0.0]])
-    assert torch.equal(ds.verify_y_fn(patch), torch.tensor([False, True]))
-    assert torch.equal(ds.verify_y_fn(torch.ones((2,2))), torch.tensor([False, False])) 
+    patch = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 1.0]])
+    assert torch.equal(filter_y(patch, threshold=0.4), torch.tensor([False, True]))
+    assert torch.equal(filter_y(torch.ones((2,2))), torch.tensor([False, False])) 
