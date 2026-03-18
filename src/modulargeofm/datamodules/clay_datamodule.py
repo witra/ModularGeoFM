@@ -5,7 +5,6 @@ import math
 import rioxarray
 import xarray as xr
 import zarr
-from operator import call
 from box import Box
 import yaml
 import lightning as L
@@ -60,8 +59,7 @@ class ClayIterableDataset(IterableDataset):
                  batch_size=1,
                  time_dim='time',
                  filter_x_thres=0.05,
-                 filter_y_thres=0.05  
-            
+                 filter_y_thres=0.05
     ) -> None:
         super().__init__()
         self.samples = samples
@@ -232,10 +230,11 @@ class ClayIterableDataset(IterableDataset):
             gc.collect()
                 
 class ClayDataset(Dataset):
-    def __init__(self, chip_zarr_dir, augment=None, num_augment=1):
+    def __init__(self, chip_zarr_dir, augment=None, num_augment=1, pred=False):
         self.chip_zarr_dir = chip_zarr_dir
         self.augment = augment
         self.num_augment = num_augment
+        self.pred=pred
         self.index = []
         self.zarr_paths = glob.glob(f"{self.chip_zarr_dir}/*.zarr")
         for path_id, zarr_path in enumerate(self.zarr_paths):
@@ -253,7 +252,14 @@ class ClayDataset(Dataset):
         path_id, i = self.index[idx]
         z = zarr.open(self.zarr_paths[path_id], mode='r')
         pixel = torch.from_numpy(z['pixels'][i])
-        label = torch.from_numpy(z['labels'][i])
+        if self.pred:
+            ycoord = z['ycoord'][i]
+            xcoord = z['xcoord'][i]
+            spatial_ref = z['spatial_ref'][i]
+            label = [ycoord, xcoord, spatial_ref]
+        else:
+            label = torch.from_numpy(z['labels'][i])
+            
         time = torch.from_numpy(z['time'][i])
         latlon = torch.from_numpy(z['latlon'][i])
     
@@ -268,7 +274,7 @@ class ClayDataset(Dataset):
             label = label[0][0]
             
         return dict(pixels=pixel,  # [C H W]
-                    y=label,  # [H, W]
+                    y=label,  # [H, W] if not predict else [ycoord, xcoord, spatial_ref]
                     time=time, # [4]
                     latlon=latlon,  # [4]
                     gsd=gsd, # 1
